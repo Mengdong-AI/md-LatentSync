@@ -129,11 +129,12 @@ class AlignRestore(object):
                 if self.upscale_factor != 1.0:
                     upsample_img = cv2.resize(upsample_img, (w, h), interpolation=cv2.INTER_LANCZOS4)
         else:
-            inv_soft_mask = inv_soft_mask[:, :, None]
+            if not return_mask:
+                inv_soft_mask = inv_soft_mask[:, :, None]
             
         if return_mask:
-            if len(inv_soft_mask.shape) == 2:
-                inv_soft_mask = inv_soft_mask[:, :, np.newaxis]
+            if len(inv_soft_mask.shape) > 2:
+                inv_soft_mask = inv_soft_mask[:, :, 0] if inv_soft_mask.shape[2] > 0 else inv_soft_mask[:, :]
             return inv_restored, inv_soft_mask
         
         upsample_img = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
