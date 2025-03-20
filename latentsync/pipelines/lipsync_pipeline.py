@@ -516,32 +516,36 @@ class LipsyncPipeline(DiffusionPipeline):
 
         # 根据是否开启高质量选项使用不同的视频写入方式
         if high_quality:
-            # 使用无损或高质量有损编码写入视频
+            # 使用ffmpeg直接将帧写入视频，而不是OpenCV
             temp_video_path = os.path.join(temp_dir, "video.mp4")
-            h, w = synced_video_frames.shape[1:3]
+            temp_frames_dir = os.path.join(temp_dir, "frames")
+            os.makedirs(temp_frames_dir, exist_ok=True)
             
-            # 使用OpenCV高质量编码保存视频
-            fourcc = cv2.VideoWriter_fourcc(*'H264')
-            video_writer = cv2.VideoWriter(
-                temp_video_path, fourcc, video_fps, (w, h), 
-                isColor=True
-            )
-            
-            for frame in synced_video_frames:
-                video_writer.write(frame)
-            video_writer.release()
+            print(f"Saving {len(synced_video_frames)} frames...")
+            # 先保存所有帧为图像文件
+            for i, frame in enumerate(synced_video_frames):
+                frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
+                cv2.imwrite(frame_path, frame)
             
             # 写入音频
             audio_path = os.path.join(temp_dir, "audio.wav")
             sf.write(audio_path, audio_samples, audio_sample_rate)
             
-            # 使用ffmpeg高质量参数合成最终视频
-            # -crf 值越低质量越高，18是视觉无损，23是默认值
-            # -preset 控制编码速度和质量的平衡
-            command = (f"ffmpeg -y -loglevel error -nostdin -i {temp_video_path} "
-                      f"-i {audio_path} -c:v libx264 -preset slower -crf 18 "
-                      f"-pix_fmt yuv420p -c:a aac -b:a 320k {video_out_path}")
-            subprocess.run(command, shell=True)
+            # 使用ffmpeg将图像序列转换为视频
+            imgs_path = os.path.join(temp_frames_dir, "frame_%04d.png")
+            temp_video_no_audio = os.path.join(temp_dir, "video_no_audio.mp4")
+            
+            # 先创建没有音频的视频
+            ffmpeg_cmd = (f"ffmpeg -y -loglevel error -framerate {video_fps} -i {imgs_path} "
+                          f"-c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p {temp_video_no_audio}")
+            print("Running ffmpeg to create video...")
+            subprocess.run(ffmpeg_cmd, shell=True)
+            
+            # 添加音频到视频
+            ffmpeg_audio_cmd = (f"ffmpeg -y -loglevel error -i {temp_video_no_audio} "
+                              f"-i {audio_path} -c:v copy -c:a aac -b:a 320k -shortest {video_out_path}")
+            print("Adding audio to video...")
+            subprocess.run(ffmpeg_audio_cmd, shell=True)
         else:
             # 使用原来的方式处理
             write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=video_fps)
