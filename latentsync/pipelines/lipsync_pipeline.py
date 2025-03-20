@@ -265,20 +265,45 @@ class LipsyncPipeline(DiffusionPipeline):
         return faces, boxes, affine_matrices
 
     def restore_video(self, faces: torch.Tensor, video_frames: np.ndarray, boxes: list, affine_matrices: list):
+        """
+        恢复视频帧，只替换面部区域以保持原始视频质量
+        """
         video_frames = video_frames[: len(faces)]
         out_frames = []
-        print(f"Restoring {len(faces)} faces...")
+        print(f"Restoring {len(faces)} faces with enhanced quality...")
+        
         for index, face in enumerate(tqdm.tqdm(faces)):
+            # 获取原始视频帧
+            original_frame = video_frames[index].copy()
+            
+            # 处理人脸
             x1, y1, x2, y2 = boxes[index]
             height = int(y2 - y1)
             width = int(x2 - x1)
-            face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
+            
+            # 转换面部图像从张量到numpy
+            face = torchvision.transforms.functional.resize(face, size=(height, width), 
+                                                           antialias=True)
             face = rearrange(face, "c h w -> h w c")
             face = (face / 2 + 0.5).clamp(0, 1)
             face = (face * 255).to(torch.uint8).cpu().numpy()
-            # face = cv2.resize(face, (width, height), interpolation=cv2.INTER_LANCZOS4)
-            out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
-            out_frames.append(out_frame)
+            
+            # 只获取处理过的面部和掩码，不替换整个图像
+            face_region, face_mask = self.image_processor.restorer.restore_img(
+                original_frame, face, affine_matrices[index], return_mask=True)
+            
+            # 用面部区域更新原始帧，保留原始质量
+            enhanced_frame = original_frame.copy()
+            # 只在掩码区域进行混合
+            face_mask_3d = face_mask > 0.05  # 只应用在确实有面部的区域
+            enhanced_frame = np.where(
+                face_mask_3d,
+                face_mask * face_region + (1 - face_mask) * original_frame,
+                original_frame
+            )
+            
+            out_frames.append(enhanced_frame.astype(np.uint8))
+        
         return np.stack(out_frames, axis=0)
 
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
@@ -324,12 +349,14 @@ class LipsyncPipeline(DiffusionPipeline):
         audio_sample_rate: int = 16000,
         height: Optional[int] = None,
         width: Optional[int] = None,
+        face_upscale_factor: float = 1.0,  # 新增参数，控制面部放大因子
         num_inference_steps: int = 20,
         guidance_scale: float = 1.5,
         weight_dtype: Optional[torch.dtype] = torch.float16,
         eta: float = 0.0,
         mask: str = "fix_mask",
         mask_image_path: str = "latentsync/utils/mask.png",
+        high_quality: bool = False,  # 新增参数，控制视频质量
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
@@ -344,7 +371,9 @@ class LipsyncPipeline(DiffusionPipeline):
         batch_size = 1
         device = self._execution_device
         mask_image = load_fixed_mask(height, mask_image_path)
+        # 设置面部放大因子
         self.image_processor = ImageProcessor(height, mask=mask, device="cuda", mask_image=mask_image)
+        self.image_processor.restorer.upscale_factor = face_upscale_factor
         self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 
         # 1. Default height and width to unet
@@ -485,10 +514,38 @@ class LipsyncPipeline(DiffusionPipeline):
             shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
 
-        write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=25)
-        # write_video(video_mask_path, masked_video_frames, fps=25)
-
-        sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
-
-        command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
-        subprocess.run(command, shell=True)
+        # 根据是否开启高质量选项使用不同的视频写入方式
+        if high_quality:
+            # 使用无损或高质量有损编码写入视频
+            temp_video_path = os.path.join(temp_dir, "video.mp4")
+            h, w = synced_video_frames.shape[1:3]
+            
+            # 使用OpenCV高质量编码保存视频
+            fourcc = cv2.VideoWriter_fourcc(*'H264')
+            video_writer = cv2.VideoWriter(
+                temp_video_path, fourcc, video_fps, (w, h), 
+                isColor=True
+            )
+            
+            for frame in synced_video_frames:
+                video_writer.write(frame)
+            video_writer.release()
+            
+            # 写入音频
+            audio_path = os.path.join(temp_dir, "audio.wav")
+            sf.write(audio_path, audio_samples, audio_sample_rate)
+            
+            # 使用ffmpeg高质量参数合成最终视频
+            # -crf 值越低质量越高，18是视觉无损，23是默认值
+            # -preset 控制编码速度和质量的平衡
+            command = (f"ffmpeg -y -loglevel error -nostdin -i {temp_video_path} "
+                      f"-i {audio_path} -c:v libx264 -preset slower -crf 18 "
+                      f"-pix_fmt yuv420p -c:a aac -b:a 320k {video_out_path}")
+            subprocess.run(command, shell=True)
+        else:
+            # 使用原来的方式处理
+            write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=video_fps)
+            sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
+            
+            command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
+            subprocess.run(command, shell=True)

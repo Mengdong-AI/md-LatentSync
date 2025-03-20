@@ -14,6 +14,8 @@ def process_video(
     audio_path,
     guidance_scale,
     inference_steps,
+    face_upscale_factor,
+    high_quality,
     seed,
 ):
     # Create the temp directory if it doesn't exist
@@ -39,7 +41,16 @@ def process_video(
     )
 
     # Parse the arguments
-    args = create_args(video_path, audio_path, output_path, inference_steps, guidance_scale, seed)
+    args = create_args(
+        video_path, 
+        audio_path, 
+        output_path, 
+        inference_steps, 
+        guidance_scale, 
+        face_upscale_factor,
+        high_quality,
+        seed
+    )
 
     try:
         result = main(
@@ -54,7 +65,14 @@ def process_video(
 
 
 def create_args(
-    video_path: str, audio_path: str, output_path: str, inference_steps: int, guidance_scale: float, seed: int
+    video_path: str, 
+    audio_path: str, 
+    output_path: str, 
+    inference_steps: int, 
+    guidance_scale: float,
+    face_upscale_factor: float,
+    high_quality: bool,
+    seed: int
 ) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--inference_ckpt_path", type=str, required=True)
@@ -63,26 +81,34 @@ def create_args(
     parser.add_argument("--video_out_path", type=str, required=True)
     parser.add_argument("--inference_steps", type=int, default=20)
     parser.add_argument("--guidance_scale", type=float, default=1.0)
+    parser.add_argument("--face_upscale_factor", type=float, default=1.0)
+    parser.add_argument("--high_quality", action="store_true")
     parser.add_argument("--seed", type=int, default=1247)
 
-    return parser.parse_args(
-        [
-            "--inference_ckpt_path",
-            CHECKPOINT_PATH.absolute().as_posix(),
-            "--video_path",
-            video_path,
-            "--audio_path",
-            audio_path,
-            "--video_out_path",
-            output_path,
-            "--inference_steps",
-            str(inference_steps),
-            "--guidance_scale",
-            str(guidance_scale),
-            "--seed",
-            str(seed),
-        ]
-    )
+    args_list = [
+        "--inference_ckpt_path",
+        CHECKPOINT_PATH.absolute().as_posix(),
+        "--video_path",
+        video_path,
+        "--audio_path",
+        audio_path,
+        "--video_out_path",
+        output_path,
+        "--inference_steps",
+        str(inference_steps),
+        "--guidance_scale",
+        str(guidance_scale),
+        "--face_upscale_factor",
+        str(face_upscale_factor),
+        "--seed",
+        str(seed),
+    ]
+    
+    # 高质量选项是布尔值，只有在选中时才添加标志
+    if high_quality:
+        args_list.append("--high_quality")
+    
+    return parser.parse_args(args_list)
 
 
 # Create Gradio interface
@@ -126,6 +152,21 @@ with gr.Blocks(title="LatentSync Video Processing") as demo:
                     label="Guidance Scale",
                 )
                 inference_steps = gr.Slider(minimum=10, maximum=50, value=20, step=1, label="Inference Steps")
+            
+            with gr.Row():
+                face_upscale_factor = gr.Slider(
+                    minimum=1.0,
+                    maximum=2.0,
+                    value=1.0,
+                    step=0.1,
+                    label="Face Upscale Factor",
+                    info="Higher values improve face details (1.0-2.0)"
+                )
+                high_quality = gr.Checkbox(
+                    label="High Quality Output", 
+                    value=False,
+                    info="Enable for better video quality (slower)"
+                )
 
             with gr.Row():
                 seed = gr.Number(value=1247, label="Random Seed", precision=0)
@@ -151,10 +192,24 @@ with gr.Blocks(title="LatentSync Video Processing") as demo:
             audio_input,
             guidance_scale,
             inference_steps,
+            face_upscale_factor,
+            high_quality,
             seed,
         ],
         outputs=video_output,
     )
 
 if __name__ == "__main__":
-    demo.launch(inbrowser=True, share=True)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--server_name", type=str, default="127.0.0.1")
+    parser.add_argument("--server_port", type=int, default=7860)
+    parser.add_argument("--share", type=bool, default=False)
+    args = parser.parse_args()
+    
+    demo.launch(
+        server_name=args.server_name,
+        server_port=args.server_port,
+        share=args.share,
+        inbrowser=True
+    )

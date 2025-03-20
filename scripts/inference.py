@@ -78,6 +78,8 @@ def main(config, args):
         torch.seed()
 
     print(f"Initial seed: {torch.initial_seed()}")
+    print(f"Face upscale factor: {args.face_upscale_factor}")
+    print(f"High quality mode: {'Enabled' if args.high_quality else 'Disabled'}")
 
     pipeline(
         video_path=args.video_path,
@@ -87,6 +89,8 @@ def main(config, args):
         num_frames=config.data.num_frames,
         num_inference_steps=args.inference_steps,
         guidance_scale=args.guidance_scale,
+        face_upscale_factor=args.face_upscale_factor,
+        high_quality=args.high_quality,
         weight_dtype=dtype,
         width=config.data.resolution,
         height=config.data.resolution,
@@ -103,6 +107,10 @@ if __name__ == "__main__":
     parser.add_argument("--video_out_path", type=str, required=True)
     parser.add_argument("--inference_steps", type=int, default=20)
     parser.add_argument("--guidance_scale", type=float, default=1.0)
+    parser.add_argument("--face_upscale_factor", type=float, default=1.0, 
+                       help="Factor to upscale face during restoration (1.0-2.0)")
+    parser.add_argument("--high_quality", action="store_true",
+                       help="Use high quality video encoding settings")
     parser.add_argument("--seed", type=int, default=1247)
     args = parser.parse_args()
 
