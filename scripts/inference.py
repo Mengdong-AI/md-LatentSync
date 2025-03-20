@@ -79,6 +79,9 @@ def main(config, args):
 
     print(f"Initial seed: {torch.initial_seed()}")
     print(f"Face upscale factor: {args.face_upscale_factor}")
+    print(f"Face enhance: {'Enabled' if args.face_enhance else 'Disabled'}")
+    print(f"Face enhance method: {args.face_enhance_method}")
+    print(f"Face enhance strength: {args.face_enhance_strength}")
     print(f"High quality mode: {'Enabled' if args.high_quality else 'Disabled'}")
 
     pipeline(
@@ -90,6 +93,9 @@ def main(config, args):
         num_inference_steps=args.inference_steps,
         guidance_scale=args.guidance_scale,
         face_upscale_factor=args.face_upscale_factor,
+        face_enhance=args.face_enhance,
+        face_enhance_method=args.face_enhance_method,
+        face_enhance_strength=args.face_enhance_strength,
         high_quality=args.high_quality,
         weight_dtype=dtype,
         width=config.data.resolution,
@@ -109,6 +115,13 @@ if __name__ == "__main__":
     parser.add_argument("--guidance_scale", type=float, default=1.0)
     parser.add_argument("--face_upscale_factor", type=float, default=1.0, 
                        help="Factor to upscale face during restoration (1.0-2.0)")
+    parser.add_argument("--face_enhance", action="store_true",
+                       help="Enable face enhancement")
+    parser.add_argument("--face_enhance_method", type=str, default="combined",
+                       choices=["sharpen", "clahe", "detail", "combined"],
+                       help="Face enhancement method")
+    parser.add_argument("--face_enhance_strength", type=float, default=0.8,
+                       help="Face enhancement strength (0.0-1.0)")
     parser.add_argument("--high_quality", action="store_true",
                        help="Use high quality video encoding settings")
     parser.add_argument("--seed", type=int, default=1247)

@@ -15,6 +15,9 @@ def process_video(
     guidance_scale,
     inference_steps,
     face_upscale_factor,
+    face_enhance,
+    face_enhance_method,
+    face_enhance_strength,
     high_quality,
     seed,
 ):
@@ -53,11 +56,15 @@ def process_video(
             inference_steps, 
             guidance_scale, 
             face_upscale_factor,
+            face_enhance,
+            face_enhance_method,
+            face_enhance_strength,
             high_quality,
             seed
         )
 
         print(f"Processing with face_upscale_factor={face_upscale_factor} and high_quality={high_quality}")
+        print(f"Face enhance: {face_enhance}, method: {face_enhance_method}, strength: {face_enhance_strength}")
         print(f"Input video: {video_path}")
         print(f"Input audio: {audio_path}")
         print(f"Output path: {output_path}")
@@ -82,6 +89,9 @@ def create_args(
     inference_steps: int, 
     guidance_scale: float,
     face_upscale_factor: float,
+    face_enhance: bool,
+    face_enhance_method: str,
+    face_enhance_strength: float,
     high_quality: bool,
     seed: int
 ) -> argparse.Namespace:
@@ -93,6 +103,9 @@ def create_args(
     parser.add_argument("--inference_steps", type=int, default=20)
     parser.add_argument("--guidance_scale", type=float, default=1.0)
     parser.add_argument("--face_upscale_factor", type=float, default=1.0)
+    parser.add_argument("--face_enhance", action="store_true")
+    parser.add_argument("--face_enhance_method", type=str, default="combined")
+    parser.add_argument("--face_enhance_strength", type=float, default=0.8)
     parser.add_argument("--high_quality", action="store_true")
     parser.add_argument("--seed", type=int, default=1247)
 
@@ -111,13 +124,19 @@ def create_args(
         str(guidance_scale),
         "--face_upscale_factor",
         str(face_upscale_factor),
+        "--face_enhance_method",
+        face_enhance_method,
+        "--face_enhance_strength",
+        str(face_enhance_strength),
         "--seed",
         str(seed),
     ]
     
-    # 高质量选项是布尔值，只有在选中时才添加标志
+    # 布尔标志选项
     if high_quality:
         args_list.append("--high_quality")
+    if face_enhance:
+        args_list.append("--face_enhance")
     
     return parser.parse_args(args_list)
 
@@ -173,6 +192,29 @@ with gr.Blocks(title="LatentSync Video Processing") as demo:
                     label="Face Upscale Factor",
                     info="Higher values improve face details (1.0-2.0)"
                 )
+                face_enhance = gr.Checkbox(
+                    label="Face Enhance", 
+                    value=False,
+                    info="Enable for face enhancement"
+                )
+
+            with gr.Row():
+                face_enhance_method = gr.Dropdown(
+                    choices=["sharpen", "clahe", "detail", "combined"],
+                    value="combined",
+                    label="Face Enhance Method",
+                    info="Select the method for face enhancement"
+                )
+                face_enhance_strength = gr.Slider(
+                    minimum=0.0,
+                    maximum=1.0,
+                    value=0.8,
+                    step=0.1,
+                    label="Face Enhance Strength",
+                    info="Adjust the strength of face enhancement"
+                )
+
+            with gr.Row():
                 high_quality = gr.Checkbox(
                     label="High Quality Output", 
                     value=False,
@@ -204,6 +246,9 @@ with gr.Blocks(title="LatentSync Video Processing") as demo:
             guidance_scale,
             inference_steps,
             face_upscale_factor,
+            face_enhance,
+            face_enhance_method,
+            face_enhance_strength,
             high_quality,
             seed,
         ],

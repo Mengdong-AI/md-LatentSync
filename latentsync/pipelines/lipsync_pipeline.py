@@ -33,6 +33,7 @@ from ..models.unet import UNet3DConditionModel
 from ..utils.util import read_video, read_audio, write_video, check_ffmpeg_installed
 from ..utils.image_processor import ImageProcessor, load_fixed_mask
 from ..whisper.audio2feature import Audio2Feature
+from ..utils.face_enhancer import FaceEnhancer  # 导入面部增强器
 import tqdm
 import soundfile as sf
 
@@ -301,6 +302,11 @@ class LipsyncPipeline(DiffusionPipeline):
                 # PyTorch/PIL使用RGB，需要转换为BGR以便与OpenCV兼容
                 face_bgr = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
                 
+                # 应用面部增强（如果启用）
+                if self.face_enhancer is not None:
+                    face_bgr = self.face_enhancer.enhance(face_bgr)
+                    print(f"已对帧 {index} 应用面部增强") if index % 10 == 0 else None
+                
                 # 获取处理过的面部和掩码
                 face_region, face_mask = self.image_processor.restorer.restore_img(
                     original_frame_bgr, face_bgr, affine_matrices[index], return_mask=True)
@@ -375,14 +381,17 @@ class LipsyncPipeline(DiffusionPipeline):
         audio_sample_rate: int = 16000,
         height: Optional[int] = None,
         width: Optional[int] = None,
-        face_upscale_factor: float = 1.0,  # 新增参数，控制面部放大因子
+        face_upscale_factor: float = 1.0,  # 控制面部放大因子
+        face_enhance: bool = False,  # 是否启用面部增强
+        face_enhance_method: str = 'combined',  # 面部增强方法
+        face_enhance_strength: float = 0.8,  # 面部增强强度
+        high_quality: bool = False,  # 控制视频质量
         num_inference_steps: int = 20,
         guidance_scale: float = 1.5,
         weight_dtype: Optional[torch.dtype] = torch.float16,
         eta: float = 0.0,
         mask: str = "fix_mask",
         mask_image_path: str = "latentsync/utils/mask.png",
-        high_quality: bool = False,  # 新增参数，控制视频质量
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
@@ -400,6 +409,16 @@ class LipsyncPipeline(DiffusionPipeline):
         # 设置面部放大因子
         self.image_processor = ImageProcessor(height, mask=mask, device="cuda", mask_image=mask_image)
         self.image_processor.restorer.upscale_factor = face_upscale_factor
+        
+        # 设置面部增强器
+        self.face_enhancer = None
+        if face_enhance:
+            self.face_enhancer = FaceEnhancer(
+                enhancement_strength=face_enhance_strength,
+                method=face_enhance_method
+            )
+            print(f"面部增强已启用 - 方法: {face_enhance_method}, 强度: {face_enhance_strength}")
+            
         self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 
         # 1. Default height and width to unet
