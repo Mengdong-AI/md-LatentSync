@@ -115,8 +115,15 @@ def write_video(video_output_path: str, video_frames: np.ndarray, fps: int):
     out = cv2.VideoWriter(video_output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     # out = cv2.VideoWriter(video_output_path, cv2.VideoWriter_fourcc(*"vp09"), fps, (width, height))
     for frame in video_frames:
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        out.write(frame)
+        # 检查是否需要BGR转换（取决于输入帧是BGR还是RGB）
+        # 如果第一个像素的B通道明显比R通道大，说明已经是BGR格式
+        if np.mean(frame[:, :, 0]) > np.mean(frame[:, :, 2]) + 50:
+            # 已经是BGR格式，不需要转换
+            out.write(frame)
+        else:
+            # 需要从RGB转换到BGR
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            out.write(frame)
     out.release()
 
 

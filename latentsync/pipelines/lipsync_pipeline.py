@@ -273,8 +273,14 @@ class LipsyncPipeline(DiffusionPipeline):
         print(f"Restoring {len(faces)} faces with enhanced quality...")
         
         for index, face in enumerate(tqdm.tqdm(faces)):
-            # 获取原始视频帧
+            # 获取原始视频帧 - OpenCV使用BGR格式，而视频是RGB格式
             original_frame = video_frames[index].copy()
+            
+            # 将原始帧转换为BGR格式（OpenCV期望的格式）
+            if original_frame.shape[2] == 3:  # 确保是彩色图像
+                original_frame_bgr = cv2.cvtColor(original_frame, cv2.COLOR_RGB2BGR)
+            else:
+                original_frame_bgr = original_frame.copy()
             
             # 处理人脸
             x1, y1, x2, y2 = boxes[index]
@@ -288,21 +294,27 @@ class LipsyncPipeline(DiffusionPipeline):
             face = (face / 2 + 0.5).clamp(0, 1)
             face = (face * 255).to(torch.uint8).cpu().numpy()
             
-            # 只获取处理过的面部和掩码，不替换整个图像
-            face_region, face_mask = self.image_processor.restorer.restore_img(
-                original_frame, face, affine_matrices[index], return_mask=True)
+            # PyTorch/PIL使用RGB，需要转换为BGR以便与OpenCV兼容
+            face_bgr = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
             
-            # 用面部区域更新原始帧，保留原始质量
-            enhanced_frame = original_frame.copy()
+            # 获取处理过的面部和掩码
+            face_region, face_mask = self.image_processor.restorer.restore_img(
+                original_frame_bgr, face_bgr, affine_matrices[index], return_mask=True)
+            
+            # 混合后的结果已经是BGR格式，转回RGB格式保持一致性
+            enhanced_frame_bgr = original_frame_bgr.copy()
             # 只在掩码区域进行混合
             face_mask_3d = face_mask > 0.05  # 只应用在确实有面部的区域
-            enhanced_frame = np.where(
+            enhanced_frame_bgr = np.where(
                 face_mask_3d,
-                face_mask * face_region + (1 - face_mask) * original_frame,
-                original_frame
+                face_mask * face_region + (1 - face_mask) * original_frame_bgr,
+                original_frame_bgr
             )
             
-            out_frames.append(enhanced_frame.astype(np.uint8))
+            # 将结果转回RGB格式
+            enhanced_frame = cv2.cvtColor(enhanced_frame_bgr.astype(np.uint8), cv2.COLOR_BGR2RGB)
+            
+            out_frames.append(enhanced_frame)
         
         return np.stack(out_frames, axis=0)
 
@@ -524,8 +536,10 @@ class LipsyncPipeline(DiffusionPipeline):
             print(f"Saving {len(synced_video_frames)} frames...")
             # 先保存所有帧为图像文件
             for i, frame in enumerate(synced_video_frames):
+                # synced_video_frames 现在是RGB格式，需要转换为BGR给OpenCV
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
-                cv2.imwrite(frame_path, frame)
+                cv2.imwrite(frame_path, frame_bgr)
             
             # 写入音频
             audio_path = os.path.join(temp_dir, "audio.wav")
@@ -547,7 +561,7 @@ class LipsyncPipeline(DiffusionPipeline):
             print("Adding audio to video...")
             subprocess.run(ffmpeg_audio_cmd, shell=True)
         else:
-            # 使用原来的方式处理
+            # 使用原来的方式处理，写入视频函数会自动处理RGB->BGR转换
             write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=video_fps)
             sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
             
