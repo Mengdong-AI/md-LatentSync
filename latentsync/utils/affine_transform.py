@@ -85,10 +85,15 @@ class AlignRestore(object):
     def restore_img(self, input_img, face, affine_matrix, return_mask=False):
         h, w, _ = input_img.shape
         h_up, w_up = int(h * self.upscale_factor), int(w * self.upscale_factor)
-        upsample_img = cv2.resize(input_img, (w_up, h_up), interpolation=cv2.INTER_LANCZOS4)
+        
+        if self.upscale_factor != 1.0:
+            upsample_img = cv2.resize(input_img, (w_up, h_up), interpolation=cv2.INTER_LANCZOS4)
+        else:
+            upsample_img = input_img.copy()
+            
         inverse_affine = cv2.invertAffineTransform(affine_matrix)
-        inverse_affine *= self.upscale_factor
-        if self.upscale_factor > 1:
+        if self.upscale_factor != 1.0:
+            inverse_affine *= self.upscale_factor
             extra_offset = 0.5 * self.upscale_factor
         else:
             extra_offset = 0
@@ -113,12 +118,26 @@ class AlignRestore(object):
         
         blur_size = max(w_edge, 3)
         inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size*2+1, blur_size*2+1), 0)
-        inv_soft_mask = inv_soft_mask[:, :, None]
         
+        if inv_soft_mask.shape[0] != h or inv_soft_mask.shape[1] != w:
+            if return_mask:
+                inv_restored = cv2.resize(inv_restored, (w, h), interpolation=cv2.INTER_LANCZOS4)
+                inv_soft_mask = cv2.resize(inv_soft_mask, (w, h), interpolation=cv2.INTER_LANCZOS4)
+            else:
+                inv_soft_mask = inv_soft_mask[:, :, None]
+                upsample_img = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
+                if self.upscale_factor != 1.0:
+                    upsample_img = cv2.resize(upsample_img, (w, h), interpolation=cv2.INTER_LANCZOS4)
+        else:
+            inv_soft_mask = inv_soft_mask[:, :, None]
+            
         if return_mask:
+            if len(inv_soft_mask.shape) == 2:
+                inv_soft_mask = inv_soft_mask[:, :, np.newaxis]
             return inv_restored, inv_soft_mask
         
         upsample_img = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
+        
         if np.max(upsample_img) > 256:
             upsample_img = upsample_img.astype(np.uint16)
         else:

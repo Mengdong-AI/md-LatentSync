@@ -18,41 +18,50 @@ def process_video(
     high_quality,
     seed,
 ):
-    # Create the temp directory if it doesn't exist
-    output_dir = Path("./temp")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Convert paths to absolute Path objects and normalize them
-    video_file_path = Path(video_path)
-    video_path = video_file_path.absolute().as_posix()
-    audio_path = Path(audio_path).absolute().as_posix()
-
-    current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Set the output path for the processed video
-    output_path = str(output_dir / f"{video_file_path.stem}_{current_time}.mp4")  # Change the filename as needed
-
-    config = OmegaConf.load(CONFIG_PATH)
-
-    config["run"].update(
-        {
-            "guidance_scale": guidance_scale,
-            "inference_steps": inference_steps,
-        }
-    )
-
-    # Parse the arguments
-    args = create_args(
-        video_path, 
-        audio_path, 
-        output_path, 
-        inference_steps, 
-        guidance_scale, 
-        face_upscale_factor,
-        high_quality,
-        seed
-    )
-
     try:
+        # Create the temp directory if it doesn't exist
+        output_dir = Path("./results")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create a unique subfolder for this run
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = output_dir / f"run_{current_time}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        # Convert paths to absolute Path objects and normalize them
+        video_file_path = Path(video_path)
+        video_path = video_file_path.absolute().as_posix()
+        audio_path = Path(audio_path).absolute().as_posix()
+
+        # Set the output path for the processed video
+        output_path = str(run_dir / f"{video_file_path.stem}_processed.mp4")  # Change the filename as needed
+
+        config = OmegaConf.load(CONFIG_PATH)
+
+        config["run"].update(
+            {
+                "guidance_scale": guidance_scale,
+                "inference_steps": inference_steps,
+            }
+        )
+
+        # Parse the arguments
+        args = create_args(
+            video_path, 
+            audio_path, 
+            output_path, 
+            inference_steps, 
+            guidance_scale, 
+            face_upscale_factor,
+            high_quality,
+            seed
+        )
+
+        print(f"Processing with face_upscale_factor={face_upscale_factor} and high_quality={high_quality}")
+        print(f"Input video: {video_path}")
+        print(f"Input audio: {audio_path}")
+        print(f"Output path: {output_path}")
+
         result = main(
             config=config,
             args=args,
@@ -60,8 +69,10 @@ def process_video(
         print("Processing completed successfully.")
         return output_path  # Ensure the output path is returned
     except Exception as e:
-        print(f"Error during processing: {str(e)}")
-        raise gr.Error(f"Error during processing: {str(e)}")
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error during processing: {str(e)}\n{error_details}")
+        raise gr.Error(f"处理时出错: {str(e)}")
 
 
 def create_args(

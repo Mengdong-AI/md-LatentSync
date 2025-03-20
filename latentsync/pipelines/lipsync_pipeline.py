@@ -276,6 +276,9 @@ class LipsyncPipeline(DiffusionPipeline):
             # 获取原始视频帧 - OpenCV使用BGR格式，而视频是RGB格式
             original_frame = video_frames[index].copy()
             
+            # 获取原始帧的尺寸
+            orig_h, orig_w = original_frame.shape[:2]
+            
             # 将原始帧转换为BGR格式（OpenCV期望的格式）
             if original_frame.shape[2] == 3:  # 确保是彩色图像
                 original_frame_bgr = cv2.cvtColor(original_frame, cv2.COLOR_RGB2BGR)
@@ -287,6 +290,9 @@ class LipsyncPipeline(DiffusionPipeline):
             height = int(y2 - y1)
             width = int(x2 - x1)
             
+            # 计算放大因子 - 确保不会超出原始视频边界
+            upscale = self.image_processor.restorer.upscale_factor
+            
             # 转换面部图像从张量到numpy
             face = torchvision.transforms.functional.resize(face, size=(height, width), 
                                                            antialias=True)
@@ -297,24 +303,42 @@ class LipsyncPipeline(DiffusionPipeline):
             # PyTorch/PIL使用RGB，需要转换为BGR以便与OpenCV兼容
             face_bgr = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
             
-            # 获取处理过的面部和掩码
-            face_region, face_mask = self.image_processor.restorer.restore_img(
-                original_frame_bgr, face_bgr, affine_matrices[index], return_mask=True)
-            
-            # 混合后的结果已经是BGR格式，转回RGB格式保持一致性
-            enhanced_frame_bgr = original_frame_bgr.copy()
-            # 只在掩码区域进行混合
-            face_mask_3d = face_mask > 0.05  # 只应用在确实有面部的区域
-            enhanced_frame_bgr = np.where(
-                face_mask_3d,
-                face_mask * face_region + (1 - face_mask) * original_frame_bgr,
-                original_frame_bgr
-            )
-            
-            # 将结果转回RGB格式
-            enhanced_frame = cv2.cvtColor(enhanced_frame_bgr.astype(np.uint8), cv2.COLOR_BGR2RGB)
-            
-            out_frames.append(enhanced_frame)
+            try:
+                # 获取处理过的面部和掩码
+                face_region, face_mask = self.image_processor.restorer.restore_img(
+                    original_frame_bgr, face_bgr, affine_matrices[index], return_mask=True)
+                
+                # 检查并修复尺寸不匹配问题
+                mask_h, mask_w = face_mask.shape[:2]
+                if mask_h != orig_h or mask_w != orig_w:
+                    print(f"调整掩码尺寸从 {face_mask.shape} 到 {original_frame_bgr.shape[:2]}")
+                    face_region = cv2.resize(face_region, (orig_w, orig_h), interpolation=cv2.INTER_LANCZOS4)
+                    face_mask = cv2.resize(face_mask, (orig_w, orig_h), interpolation=cv2.INTER_LANCZOS4)
+                
+                # 确保掩码是3通道（如果是单通道）
+                if len(face_mask.shape) == 2 or face_mask.shape[2] == 1:
+                    face_mask_3d = np.repeat(face_mask[:, :, np.newaxis], 3, axis=2)
+                    face_mask_3d = face_mask_3d > 0.05  # 只应用在确实有面部的区域
+                else:
+                    face_mask_3d = face_mask > 0.05
+                
+                # 混合后的结果已经是BGR格式，转回RGB格式保持一致性
+                enhanced_frame_bgr = original_frame_bgr.copy()
+                # 只在掩码区域进行混合
+                enhanced_frame_bgr = np.where(
+                    face_mask_3d,
+                    face_mask_3d * face_region + (1 - face_mask_3d) * original_frame_bgr,
+                    original_frame_bgr
+                )
+                
+                # 将结果转回RGB格式
+                enhanced_frame = cv2.cvtColor(enhanced_frame_bgr.astype(np.uint8), cv2.COLOR_BGR2RGB)
+                
+                out_frames.append(enhanced_frame)
+            except Exception as e:
+                print(f"警告：处理第 {index} 帧时出错: {str(e)}，使用原始帧")
+                # 如果处理失败，使用原始帧
+                out_frames.append(original_frame)
         
         return np.stack(out_frames, axis=0)
 
