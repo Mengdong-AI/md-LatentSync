@@ -28,6 +28,7 @@ from diffusers.utils import deprecate, logging
 
 from einops import rearrange
 import cv2
+from decord import VideoReader
 
 from ..models.unet import UNet3DConditionModel
 from ..utils.util import read_video, read_audio, write_video, check_ffmpeg_installed

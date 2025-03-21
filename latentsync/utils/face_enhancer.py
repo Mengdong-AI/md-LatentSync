@@ -16,7 +16,8 @@ class FaceEnhancer:
         device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
         mouth_protection: bool = True,  # 默认启用嘴唇保护
         mouth_protection_strength: float = 0.8,  # 嘴唇保护强度，0表示完全保留原始嘴唇，1表示完全使用增强嘴唇
-        model_path: Optional[str] = None
+        model_path: Optional[str] = None,
+        enable: bool = True
     ):
         """
         初始化面部增强器
@@ -29,6 +30,7 @@ class FaceEnhancer:
             mouth_protection (bool): 是否保护嘴唇区域，减少对唇形同步的影响
             mouth_protection_strength (float): 嘴唇保护强度，取值范围 [0, 1]，0表示完全保留原始嘴唇
             model_path (str, optional): 模型路径，如果不指定则使用默认路径
+            enable (bool): 是否启用面部增强
         """
         self.method = method.lower()
         self.enhancement_strength = enhancement_strength
@@ -38,6 +40,11 @@ class FaceEnhancer:
         self.mouth_protection_strength = max(0.0, min(1.0, mouth_protection_strength))
         self.model = None
         self.model_path = model_path
+        self.enable = enable
+        
+        if not self.enable:
+            print("面部增强已禁用")
+            return
         
         print(f"正在初始化面部增强器 - 方法: {method}, 强度: {enhancement_strength}")
         print(f"嘴唇保护: {'已启用' if mouth_protection else '已禁用'}, 保护强度: {mouth_protection_strength}")
@@ -116,7 +123,7 @@ class FaceEnhancer:
             except Exception as e:
                 print(f"无法导入GFPGAN: {str(e)}")
                 print("请安装相应的依赖: pip install git+https://github.com/TencentARC/GFPGAN.git")
-                raise
+                self.enable = False
     
     def _load_codeformer(self):
         """加载CodeFormer模型"""
@@ -209,7 +216,7 @@ class FaceEnhancer:
             except Exception as e:
                 print(f"无法导入CodeFormer: {str(e)}")
                 print("请安装相应的依赖")
-                raise
+                self.enable = False
     
     def _load_gpen(self):
         """加载GPEN模型"""
@@ -237,86 +244,11 @@ class FaceEnhancer:
             print("GPEN模型加载成功")
             
         except ImportError:
-            print("无法导入GPEN，尝试备选导入方式...")
-            try:
-                import sys
-                # 检查是否有GPEN目录
-                if os.path.exists('GPEN'):
-                    sys.path.append('GPEN')
-                    
-                    # 创建一个简单的包装类来模拟GPEN
-                    class SimpleGPEN:
-                        def __init__(self, model_path, size=512, device='cuda'):
-                            self.device = device
-                            self.size = size
-                            self.model_path = model_path
-                            
-                            # 导入需要的模块
-                            from model import FullGenerator
-                            import torch.nn as nn
-                            
-                            # 创建模型
-                            self.model = FullGenerator(512, 512, 8, 2, narrow=1)
-                            
-                            # 加载预训练模型
-                            checkpoint = torch.load(model_path, map_location=device)
-                            self.model.load_state_dict(checkpoint)
-                            self.model.to(device)
-                            self.model.eval()
-                            
-                        def process(self, img):
-                            # 简单的图像预处理
-                            import cv2
-                            import numpy as np
-                            import torch
-                            from torchvision import transforms
-                            
-                            # 调整图像大小
-                            h, w = img.shape[:2]
-                            img = cv2.resize(img, (self.size, self.size))
-                            
-                            # 转换为张量
-                            img_tensor = transforms.ToTensor()(img)
-                            img_tensor = (img_tensor * 2.0 - 1.0).unsqueeze(0).to(self.device)
-                            
-                            # 模型推理
-                            with torch.no_grad():
-                                output = self.model(img_tensor)
-                                
-                            # 转换回OpenCV图像格式
-                            output = output.squeeze(0).permute(1, 2, 0).cpu().numpy()
-                            output = (output * 0.5 + 0.5) * 255
-                            output = output.astype(np.uint8)
-                            
-                            # 调整回原始大小
-                            output = cv2.resize(output, (w, h))
-                            
-                            return output
-                    
-                    # 设定模型路径
-                    if self.model_path is None:
-                        self.model_path = 'models/faceenhancer/GPEN-BFR-512.pth'
-                        
-                        # 如果模型不存在，打印下载说明
-                        if not os.path.exists(self.model_path):
-                            print(f"GPEN模型不存在: {self.model_path}")
-                            print("请从 https://github.com/yangxy/GPEN/releases 下载模型")
-                            print(f"并将其放置到 {self.model_path}")
-                            raise FileNotFoundError(f"GPEN模型不存在: {self.model_path}")
-                    
-                    # 初始化简单的GPEN包装类
-                    self.model = SimpleGPEN(
-                        model_path=self.model_path,
-                        size=512,
-                        device=self.device
-                    )
-                    print("GPEN模型加载成功（备选方法）")
-                else:
-                    raise ImportError("GPEN目录不存在，请克隆仓库: git clone https://github.com/yangxy/GPEN.git")
-            except Exception as e:
-                print(f"无法导入GPEN: {str(e)}")
-                print("请安装相应的依赖")
-                raise
+            print("无法导入GPEN模块，GPEN增强器不可用")
+            self.enable = False
+        except Exception as e:
+            print(f"加载GPEN模型失败: {str(e)}")
+            self.enable = False
     
     def enhance(self, img: np.ndarray, landmarks: Optional[np.ndarray] = None) -> np.ndarray:
         """
@@ -329,8 +261,7 @@ class FaceEnhancer:
         返回:
             np.ndarray: 增强后的图像
         """
-        if self.model is None:
-            warnings.warn("面部增强模型未加载成功，返回原始图像")
+        if not self.enable or self.model is None:
             return img
         
         # 保存原始尺寸用于后续恢复
@@ -346,6 +277,20 @@ class FaceEnhancer:
         lips_img = None
         if self.mouth_protection and landmarks is not None:
             mouth_mask = self._create_mouth_mask(processed_img, landmarks)
+            lips_img = cv2.bitwise_and(processed_img, processed_img, mask=mouth_mask)
+        elif self.mouth_protection:
+            # 如果启用了嘴唇保护但没有提供关键点，则使用简单的固定区域作为嘴唇区域
+            h, w = processed_img.shape[:2]
+            mouth_mask = np.zeros((h, w), dtype=np.uint8)
+            # 估计嘴唇位置在下半部分中间区域
+            mouth_top = int(h * 0.6)
+            mouth_bottom = int(h * 0.85)
+            mouth_left = int(w * 0.3)
+            mouth_right = int(w * 0.7)
+            # 填充嘴唇区域
+            mouth_mask[mouth_top:mouth_bottom, mouth_left:mouth_right] = 255
+            # 平滑过渡边缘
+            mouth_mask = cv2.GaussianBlur(mouth_mask, (31, 31), 0)
             lips_img = cv2.bitwise_and(processed_img, processed_img, mask=mouth_mask)
             
         # 根据不同方法进行增强
@@ -377,34 +322,23 @@ class FaceEnhancer:
         # 恢复嘴唇区域（如果启用了嘴唇保护）
         if self.mouth_protection and lips_img is not None and mouth_mask is not None:
             # 对嘴唇区域应用平滑过渡
-            dilated_mask = cv2.dilate(mouth_mask, np.ones((5, 5), np.uint8), iterations=2)
-            blurred_mask = cv2.GaussianBlur(dilated_mask, (15, 15), 0)
-            blurred_mask = blurred_mask / 255.0 if blurred_mask.max() > 1.0 else blurred_mask
-            
             # 根据嘴唇保护强度调整混合比例
+            if mouth_mask.max() > 1.0:  # 如果是0-255范围
+                mouth_mask = mouth_mask / 255.0
+            
             # 当mouth_protection_strength=0时，完全保留原始嘴唇
             # 当mouth_protection_strength=1时，完全使用增强后的嘴唇
-            # 中间值则按比例混合
             if self.mouth_protection_strength > 0:
-                # 调整掩码强度
-                blurred_mask = blurred_mask * (1.0 - self.mouth_protection_strength)
+                mouth_mask = mouth_mask * (1.0 - self.mouth_protection_strength)
             
-            # 将浮点掩码转换回uint8格式
-            if enhanced_img.dtype == np.uint8:
-                blurred_mask = (blurred_mask * 255).astype(np.uint8)
+            # 混合嘴唇区域
+            blended = enhanced_img.copy().astype(np.float32)
+            for c in range(3):  # 对每个颜色通道
+                blended[:,:,c] = enhanced_img[:,:,c] * (1 - mouth_mask) + processed_img[:,:,c] * mouth_mask
             
-            # 反转掩码
-            inv_mask = cv2.bitwise_not(blurred_mask)
-            
-            # 准备增强图像的非嘴唇部分
-            enhanced_non_lips = cv2.bitwise_and(enhanced_img, enhanced_img, mask=inv_mask)
-            
-            # 合并嘴唇和非嘴唇部分
-            result = cv2.add(enhanced_non_lips, lips_img)
-        else:
-            result = enhanced_img
+            enhanced_img = blended.astype(np.uint8)
         
-        return result
+        return enhanced_img
     
     def _enhance_with_gfpgan(self, img: np.ndarray) -> np.ndarray:
         """使用GFPGAN增强图像"""
@@ -430,7 +364,6 @@ class FaceEnhancer:
         """使用CodeFormer增强图像"""
         try:
             # 根据实际的CodeFormer API调整
-            # 这里假设CodeFormer接口与GFPGAN类似
             enhanced_img = self.model.restore(
                 img,
                 w=self.enhancement_strength,  # CodeFormer特有的权重参数
