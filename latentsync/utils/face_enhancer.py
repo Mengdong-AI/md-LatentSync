@@ -129,26 +129,36 @@ class FaceEnhancer:
         Returns:
             处理后的BGR图像，范围[0, 255]，uint8类型
         """
-        # 如果输出是4D张量(NCHW)，去掉批次维度
-        if len(img.shape) == 4:
-            img = img[0]
-        
-        # 从CHW转换回HWC
-        img = img.transpose(1, 2, 0)
-        
-        # 从[-1, 1]转换回[0, 1]
-        img = (img + 1) * 0.5
-        
-        # 从[0, 1]转换回[0, 255]并从RGB转换回BGR
-        img = (img * 255.0)[:, :, ::-1]
-        
-        # 裁剪到[0, 255]范围并转换为uint8
-        img = np.clip(img, 0, 255).astype('uint8')
-        
-        # 调整回原始图像大小
-        img = cv2.resize(img, (self.original_width, self.original_height), interpolation=cv2.INTER_LANCZOS4)
-        
-        return img
+        try:
+            # 如果输出是4D张量(NCHW)，去掉批次维度
+            if len(img.shape) == 4:
+                img = img[0]
+            
+            # 确保图像是32位浮点数类型，避免CV_16F类型不兼容的问题
+            if img.dtype != np.float32:
+                img = img.astype(np.float32)
+            
+            # 从CHW转换回HWC
+            img = img.transpose(1, 2, 0)
+            
+            # 从[-1, 1]转换回[0, 1]
+            img = (img + 1) * 0.5
+            
+            # 从[0, 1]转换回[0, 255]并从RGB转换回BGR
+            img = (img * 255.0)[:, :, ::-1]
+            
+            # 裁剪到[0, 255]范围并转换为uint8
+            img = np.clip(img, 0, 255).astype('uint8')
+            
+            # 调整回原始图像大小
+            img = cv2.resize(img, (self.original_width, self.original_height), interpolation=cv2.INTER_LANCZOS4)
+            
+            return img
+        except Exception as e:
+            print(f"后处理图像时出错: {str(e)}")
+            print(f"输入图像形状: {img.shape if hasattr(img, 'shape') else 'Unknown'}, 类型: {img.dtype if hasattr(img, 'dtype') else 'Unknown'}")
+            # 返回空图像
+            return np.zeros((self.original_height, self.original_width, 3), dtype=np.uint8)
     
     def enhance(self, img: np.ndarray, face_landmarks=None) -> np.ndarray:
         """增强图像
@@ -172,7 +182,21 @@ class FaceEnhancer:
             input_data = self.preprocess(img)
             
             # 运行ONNX推理
-            output = self.session.run(None, {self.input_name: input_data})[0]
+            try:
+                output = self.session.run(None, {self.input_name: input_data})[0]
+                print(f"ONNX输出 - 形状: {output.shape}, 类型: {output.dtype}, 范围: [{np.min(output)}, {np.max(output)}]")
+            except Exception as e:
+                print(f"ONNX推理失败: {str(e)}")
+                return img
+            
+            # 检查输出数据类型，确保是float32
+            if output.dtype != np.float32:
+                print(f"警告: 模型输出数据类型不是float32，而是{output.dtype}，尝试转换")
+                try:
+                    output = output.astype(np.float32)
+                except Exception as e:
+                    print(f"转换数据类型失败: {str(e)}，返回原始图像")
+                    return img
             
             # 后处理输出
             enhanced_img = self.postprocess(output)
