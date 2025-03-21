@@ -404,6 +404,12 @@ class LipsyncPipeline(DiffusionPipeline):
                 mask = cv2.warpAffine(mask, inv_affine_matrix, (frame_w, frame_h))
                 mask = cv2.GaussianBlur(mask, (31, 31), 10)
                 
+                # 扩展mask的维度以匹配图像通道数
+                print(f"[Debug] Frame {i} - Mask shape before expansion: {mask.shape}")
+                mask = np.expand_dims(mask, axis=2) if mask.ndim == 2 else mask
+                mask = np.repeat(mask, 3, axis=2)  # 复制到3个通道
+                print(f"[Debug] Frame {i} - Mask shape after expansion: {mask.shape}")
+                
                 # Warp face back to original position
                 try:
                     warped_face = cv2.warpAffine(face_bgr, inv_affine_matrix, (frame_w, frame_h))
@@ -415,11 +421,17 @@ class LipsyncPipeline(DiffusionPipeline):
                 # Save warped face and mask for first 5 frames
                 if i < 5:
                     cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_4_warped_face.png"), warped_face)
-                    cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_4_mask.png"), (mask * 255).astype(np.uint8))
+                    cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_4_mask.png"), (mask[:,:,0] * 255).astype(np.uint8))
                 
                 # Blend face with original frame
                 warped_face = warped_face.astype(np.float32) / 255.0
                 ori_frame_bgr = ori_frame_bgr.astype(np.float32) / 255.0
+                
+                # 打印混合前的形状信息
+                print(f"[Debug] Frame {i} - Shapes before blending:")
+                print(f"  ori_frame_bgr: {ori_frame_bgr.shape}")
+                print(f"  warped_face: {warped_face.shape}")
+                print(f"  mask: {mask.shape}")
                 
                 output_frame = ori_frame_bgr * (1 - mask) + warped_face * mask
                 output_frame = (output_frame * 255.0).astype(np.uint8)
@@ -436,7 +448,7 @@ class LipsyncPipeline(DiffusionPipeline):
             
             except Exception as e:
                 print(f"[Debug] Error processing frame {i}: {str(e)}")
-                traceback.print_exc()  # 打印完整的错误堆栈
+                traceback.print_exc()
                 try:
                     if len(original_frames) > 0 and i < len(original_frames):
                         if isinstance(original_frames, list):
