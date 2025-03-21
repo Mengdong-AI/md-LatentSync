@@ -36,6 +36,7 @@ from ..utils.util import read_video, read_audio, write_video, check_ffmpeg_insta
 from ..utils.image_processor import ImageProcessor, load_fixed_mask
 from ..whisper.audio2feature import Audio2Feature
 from ..utils.face_enhancer import FaceEnhancer  # 导入面部增强器
+from ..utils.affine_transform import AlignRestore  # 添加 AlignRestore 导入
 import tqdm
 import soundfile as sf
 

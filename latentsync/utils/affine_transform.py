@@ -120,9 +120,10 @@ class AlignRestore:
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
         warped_mask = cv2.erode(warped_mask, kernel, iterations=1)
         
-        # 创建软掩码
+        # 创建软掩码，确保维度匹配
         soft_mask = warped_mask.astype(np.float32) / 255.0
-        soft_mask = np.stack([soft_mask] * 3, axis=-1)
+        if len(soft_mask.shape) == 2:  # 如果是单通道，扩展为三通道
+            soft_mask = np.expand_dims(soft_mask, axis=-1)
         
         # 混合图像
         result = img * (1 - soft_mask) + warped_face * soft_mask
