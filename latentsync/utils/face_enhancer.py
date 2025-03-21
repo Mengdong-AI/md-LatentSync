@@ -29,8 +29,8 @@ class FaceEnhancer:
         # 检查模型路径是否有效
         if model_path is None:
             raise ValueError(f"必须提供模型路径!")
-            
-            # 检查模型文件是否存在
+        
+        # 检查模型文件是否存在
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"模型文件不存在: {model_path}")
             
@@ -64,7 +64,6 @@ class FaceEnhancer:
                 print(f"模型输入 {i}: 名称={input_info.name}, 形状={input_info.shape}, 类型={input_info.type}")
             for i, output_info in enumerate(self.ort_session.get_outputs()):
                 print(f"模型输出 {i}: 名称={output_info.name}, 形状={output_info.shape}, 类型={output_info.type}")
-                
         except Exception as e:
             print(f"创建ONNX会话时发生错误: {str(e)}")
             print(f"尝试加载模型: {model_path}")
@@ -269,12 +268,11 @@ class FaceEnhancer:
                     
                 print(f"最终结果: 形状={result.shape}, 类型={result.dtype}, 值范围=[{np.min(result)}, {np.max(result)}]")
                 return result
-            
             except Exception as e:
                 print(f"后处理时出错: {str(e)}")
                 traceback.print_exc()
                 return original_img
-        
+            
         except Exception as e:
             print(f"增强过程中发生未捕获的错误: {str(e)}")
             traceback.print_exc()

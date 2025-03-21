@@ -355,7 +355,7 @@ class LipsyncPipeline(DiffusionPipeline):
         except Exception as e:
             print(f"处理original_frames时出错: {str(e)}")
             traceback.print_exc()
-            # 如果转换失败，创建一个空帧列表
+                # 如果转换失败，创建一个空帧列表
             if len(faces) > 0:
                 face_h, face_w = faces[0, 0].shape[1:3] 
                 original_frames = np.zeros((min(len(faces), total_frames), face_h*2, face_w*2, 3), dtype=np.uint8)
@@ -468,6 +468,9 @@ class LipsyncPipeline(DiffusionPipeline):
                 mask = cv2.warpAffine(mask, inv_affine_matrix, (frame_w, frame_h))
                 mask = cv2.GaussianBlur(mask, (31, 31), 10)
                 
+                # 扩展mask从1通道到3通道，以便与RGB图像兼容
+                mask_3channel = np.repeat(mask, 3, axis=2)
+                
                 # Warp face back to original position
                 warped_face = cv2.warpAffine(face_bgr, inv_affine_matrix, (frame_w, frame_h))
                 
@@ -475,8 +478,8 @@ class LipsyncPipeline(DiffusionPipeline):
                 warped_face = warped_face.astype(np.float32) / 255.0
                 ori_frame_bgr = ori_frame_bgr.astype(np.float32) / 255.0
                 
-                # 混合图像，保持float32格式
-                output_frame = ori_frame_bgr * (1 - mask) + warped_face * mask
+                # 混合图像，保持float32格式，使用3通道mask
+                output_frame = ori_frame_bgr * (1 - mask_3channel) + warped_face * mask_3channel
                 
                 # 转换为uint8用于输出/存储
                 if output_frame.dtype != np.uint8:
