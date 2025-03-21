@@ -383,7 +383,7 @@ class LipsyncPipeline(DiffusionPipeline):
         width: Optional[int] = None,
         face_upscale_factor: float = 1.0,  # 控制面部放大因子
         face_enhance: bool = False,  # 是否启用面部增强
-        face_enhance_method: str = 'combined',  # 面部增强方法
+        face_enhance_method: str = 'gfpgan',  # 面部增强方法
         face_enhance_strength: float = 0.8,  # 面部增强强度
         high_quality: bool = False,  # 控制视频质量
         num_inference_steps: int = 20,

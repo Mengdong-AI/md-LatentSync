@@ -207,3 +207,52 @@ If you find our repo useful for your research, please consider citing our paper:
 ```
 
 ``` -->
+
+# 面部增强功能
+
+LatentSync现在支持三种高级面部增强方法，可以显著提高生成视频的质量：
+
+## 可用的面部增强器
+
+1. **GFPGAN**：腾讯ARC开发的高效面部恢复模型，能够有效修复低质量、模糊的面部图像。
+2. **CodeFormer**：基于Transformer架构的面部恢复模型，提供可控的质量-保真度平衡。
+3. **GPEN**：专注于保留原始面部特征的面部修复和增强模型。
+
+## 安装
+
+要使用面部增强功能，请按照以下步骤操作：
+
+1. 运行安装脚本安装所需依赖：
+   ```bash
+   bash install_deps.sh
+   ```
+
+2. 脚本会询问是否下载面部增强模型，选择 'y' 以下载GFPGAN模型。
+3. 根据需要，可以选择是否安装CodeFormer和GPEN。
+
+## 使用方法
+
+### 命令行使用
+
+```bash
+./inference.sh --face_enhance --face_enhance_method gfpgan --face_enhance_strength 0.8 --high_quality
+```
+
+参数说明：
+- `--face_enhance`：启用面部增强
+- `--face_enhance_method`：选择增强方法（gfpgan, codeformer, gpen）
+- `--face_enhance_strength`：设置增强强度（0.0-1.0）
+- `--high_quality`：使用高质量视频编码设置
+
+### Gradio界面使用
+
+1. 勾选 "Face Enhance" 选项
+2. 从下拉菜单选择增强方法（GFPGAN, CodeFormer, GPEN）
+3. 调整增强强度滑块
+4. 点击处理按钮
+
+## 注意事项
+
+1. 面部增强处理会增加处理时间，但能显著提高面部质量
+2. 该功能集成了嘴唇区域保护机制，以确保不影响唇形同步效果
+3. CodeFormer和GPEN需要额外安装，请按照安装脚本提示完成安装

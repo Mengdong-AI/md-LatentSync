@@ -4,7 +4,7 @@
 FACE_UPSCALE=1.0
 HIGH_QUALITY=false
 FACE_ENHANCE=false
-FACE_ENHANCE_METHOD="combined"
+FACE_ENHANCE_METHOD="gfpgan"
 FACE_ENHANCE_STRENGTH=0.8
 
 # Parse named arguments

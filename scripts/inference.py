@@ -117,8 +117,8 @@ if __name__ == "__main__":
                        help="Factor to upscale face during restoration (1.0-2.0)")
     parser.add_argument("--face_enhance", action="store_true",
                        help="Enable face enhancement")
-    parser.add_argument("--face_enhance_method", type=str, default="combined",
-                       choices=["sharpen", "clahe", "detail", "combined"],
+    parser.add_argument("--face_enhance_method", type=str, default="gfpgan",
+                       choices=["gpen", "gfpgan", "codeformer"],
                        help="Face enhancement method")
     parser.add_argument("--face_enhance_strength", type=float, default=0.8,
                        help="Face enhancement strength (0.0-1.0)")

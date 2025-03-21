@@ -200,8 +200,8 @@ with gr.Blocks(title="LatentSync Video Processing") as demo:
 
             with gr.Row():
                 face_enhance_method = gr.Dropdown(
-                    choices=["sharpen", "clahe", "detail", "combined"],
-                    value="combined",
+                    choices=["gpen", "gfpgan", "codeformer"],
+                    value="gfpgan",
                     label="Face Enhance Method",
                     info="Select the method for face enhancement"
                 )
