@@ -55,15 +55,17 @@ def read_video(video_path: str, change_fps=True, use_decord=True):
     else:
         target_video_path = video_path
 
-    if use_decord:
-        return read_video_decord(target_video_path)
-    else:
-        return read_video_cv2(target_video_path)
+    # 始终使用Decord进行视频读取
+    return read_video_decord(target_video_path)
 
 
 def read_video_decord(video_path: str):
     vr = VideoReader(video_path)
+    # 直接将Decord的输出转换为标准numpy数组，确保可索引
     video_frames = vr[:].asnumpy()
+    # 确保视频帧是标准numpy数组格式
+    if not isinstance(video_frames, np.ndarray):
+        video_frames = np.array(video_frames, dtype=np.uint8)
     vr.seek(0)
     return video_frames
 

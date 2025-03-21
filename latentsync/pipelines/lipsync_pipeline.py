@@ -288,6 +288,16 @@ class LipsyncPipeline(DiffusionPipeline):
         # Get original shapes
         original_frames = vr[:]  # [T, H, W, C]
         
+        # 确保original_frames是标准numpy数组格式
+        if not isinstance(original_frames, np.ndarray):
+            print(f"转换original_frames为numpy数组")
+            original_frames = original_frames.asnumpy() if hasattr(original_frames, "asnumpy") else np.array(original_frames, dtype=np.uint8)
+        
+        # 检查数据类型，确保兼容OpenCV处理
+        if original_frames.dtype != np.uint8 and original_frames.dtype != np.float32:
+            print(f"将original_frames从{original_frames.dtype}转换为uint8")
+            original_frames = original_frames.astype(np.uint8)
+        
         # 检查 original_frames 是否为可索引对象
         if not hasattr(original_frames, "__getitem__"):
             print(f"Warning: Cannot index original_frames, converting to numpy array")
@@ -520,7 +530,7 @@ class LipsyncPipeline(DiffusionPipeline):
         whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
 
         audio_samples = read_audio(audio_path)
-        video_frames = read_video(video_path, use_decord=False)
+        video_frames = read_video(video_path)
 
         video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames)
 
