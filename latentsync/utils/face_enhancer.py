@@ -92,13 +92,13 @@ class FaceEnhancer:
         """预处理图像
         
         Args:
-            img: 输入图像，BGR格式
+            img: 输入图像，BGR格式，可能是 uint8[0,255] 或 float32[0,1]
             
         Returns:
-            预处理后的图像和原始大小的图像
+            预处理后的图像
         """
         try:
-            print(f"[DEBUG] 预处理开始，输入图像形状: {img.shape}, 类型: {img.dtype}")
+            print(f"[DEBUG] 预处理开始，输入图像形状: {img.shape}, 类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
             
             # 保存原始图像大小
             self.original_height, self.original_width = img.shape[:2]
@@ -126,17 +126,20 @@ class FaceEnhancer:
                 raise
             
             try:
-                # 转换为浮点型并标准化
-                img_norm = img_resized.astype(np.float32)
-                print(f"[DEBUG] 转换为float32后类型: {img_norm.dtype}")
+                # 确保数据类型是 float32
+                if img_resized.dtype != np.float32:
+                    img_resized = img_resized.astype(np.float32)
+                print(f"[DEBUG] 转换为float32后类型: {img_resized.dtype}")
+                
+                # 如果输入是 uint8 类型，需要归一化到 [0,1]
+                if img.dtype == np.uint8:
+                    img_resized = img_resized / 255.0
                 
                 # BGR到RGB转换
-                img_norm = img_norm[:,:,::-1]
+                img_norm = img_resized[:,:,::-1]
                 print(f"[DEBUG] BGR到RGB转换后形状: {img_norm.shape}")
                 
-                # 归一化到[0,1]
-                img_norm = img_norm / 255.0
-                print(f"[DEBUG] 标准化后的图像范围: [{img_norm.min()}, {img_norm.max()}]")
+                print(f"[DEBUG] 当前值范围: [{img_norm.min()}, {img_norm.max()}]")
             except Exception as e:
                 print(f"[ERROR] 颜色空间转换或归一化失败: {str(e)}")
                 print(f"[ERROR] 错误类型: {type(e)}")
@@ -275,6 +278,15 @@ class FaceEnhancer:
             img = img.copy()
             print(f"[DEBUG] 输入图像形状: {img.shape}, 类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
             
+            # 确保输入数据类型为 float32
+            if img.dtype != np.float32:
+                print(f"[DEBUG] 将输入数据从 {img.dtype} 转换为 float32")
+                if img.dtype == np.uint8:
+                    img = img.astype(np.float32) / 255.0
+                else:
+                    img = img.astype(np.float32)
+                print(f"[DEBUG] 转换后数据类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
+            
             try:
                 # 预处理图像
                 print("[DEBUG] 开始预处理图像...")
@@ -318,6 +330,9 @@ class FaceEnhancer:
                     # 调整原图大小以匹配增强结果
                     original_resized = cv2.resize(img, (enhanced_img.shape[1], enhanced_img.shape[0]), 
                                                 interpolation=cv2.INTER_LANCZOS4)
+                    # 确保原图也是 uint8 类型
+                    if original_resized.dtype != np.uint8:
+                        original_resized = (original_resized * 255).clip(0, 255).astype(np.uint8)
                     enhanced_img = cv2.addWeighted(enhanced_img, self.enhancement_strength, 
                                                 original_resized, 1.0 - self.enhancement_strength, 0)
             except Exception as e:
