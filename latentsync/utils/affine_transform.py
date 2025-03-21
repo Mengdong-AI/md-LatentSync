@@ -2,6 +2,7 @@
 
 import numpy as np
 import cv2
+import torch
 
 
 def transformation_from_points(points1, points0, smooth=True, p_bias=None):
@@ -84,21 +85,38 @@ class AlignRestore(object):
 
     def restore_img(self, input_img, face, affine_matrix, return_mask=False):
         h, w, _ = input_img.shape
-        h_up, w_up = int(h * self.upscale_factor), int(w * self.upscale_factor)
-        upsample_img = cv2.resize(input_img, (w_up, h_up), interpolation=cv2.INTER_LANCZOS4)
-            
+        
+        # Only scale affine matrix, not the entire image
         inverse_affine = cv2.invertAffineTransform(affine_matrix)
-        inverse_affine *= self.upscale_factor
-        extra_offset = 0.5 * self.upscale_factor if self.upscale_factor > 1 else 0
+        if self.upscale_factor != 1.0:
+            inverse_affine *= self.upscale_factor
+            extra_offset = 0.5 * self.upscale_factor
+        else:
+            extra_offset = 0
         inverse_affine[:, 2] += extra_offset
         
-        inv_restored = cv2.warpAffine(face, inverse_affine, (w_up, h_up), 
+        # Ensure face is in uint8 format with correct range
+        if isinstance(face, torch.Tensor):
+            if face.dtype in [torch.float32, torch.float64, torch.float16]:
+                if face.max() <= 1.0:
+                    face = (face * 255).clamp(0, 255)
+                face = face.to(torch.uint8)
+            face = face.cpu().numpy()
+        elif face.dtype != np.uint8:
+            if face.max() <= 1.0:
+                face = (face * 255).clip(0, 255)
+            face = face.astype(np.uint8)
+            
+        # Warp face back to original frame size
+        inv_restored = cv2.warpAffine(face, inverse_affine, (w, h), 
                                      flags=cv2.INTER_LANCZOS4)
         
+        # Create and warp mask
         mask = np.ones((self.face_size[1], self.face_size[0]), dtype=np.float32)
-        inv_mask = cv2.warpAffine(mask, inverse_affine, (w_up, h_up),
+        inv_mask = cv2.warpAffine(mask, inverse_affine, (w, h),
                                  flags=cv2.INTER_LANCZOS4)
         
+        # Process mask
         inv_mask_erosion = cv2.erode(
             inv_mask, np.ones((int(2 * self.upscale_factor), int(2 * self.upscale_factor)), np.uint8)
         )
@@ -108,6 +126,7 @@ class AlignRestore(object):
         erosion_radius = w_edge * 2
         inv_mask_center = cv2.erode(inv_mask_erosion, np.ones((erosion_radius, erosion_radius), np.uint8))
         
+        # Create soft mask
         blur_size = w_edge * 2
         inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size + 1, blur_size + 1), 0)
         inv_soft_mask = inv_soft_mask[:, :, None]
@@ -117,17 +136,15 @@ class AlignRestore(object):
                 inv_soft_mask = inv_soft_mask[:, :, 0]
             return inv_restored, inv_soft_mask
             
-        upsample_img = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
+        # Blend face with original frame
+        result = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * input_img
         
-        if np.max(upsample_img) > 256:
-            upsample_img = upsample_img.astype(np.uint16)
+        if np.max(result) > 256:
+            result = result.astype(np.uint16)
         else:
-            upsample_img = upsample_img.astype(np.uint8)
+            result = result.astype(np.uint8)
             
-        if self.upscale_factor != 1.0:
-            upsample_img = cv2.resize(upsample_img, (w, h), interpolation=cv2.INTER_LANCZOS4)
-            
-        return upsample_img
+        return result
 
 
 class laplacianSmooth:
