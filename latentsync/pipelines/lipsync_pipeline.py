@@ -357,7 +357,7 @@ class LipsyncPipeline(DiffusionPipeline):
             traceback.print_exc()
             # 如果转换失败，创建一个空帧列表
             if len(faces) > 0:
-                face_h, face_w = faces[0, 0].shape[1:3]
+                face_h, face_w = faces[0, 0].shape[1:3] 
                 original_frames = np.zeros((min(len(faces), total_frames), face_h*2, face_w*2, 3), dtype=np.uint8)
             else:
                 original_frames = np.zeros((total_frames, 512, 512, 3), dtype=np.uint8)
@@ -403,8 +403,34 @@ class LipsyncPipeline(DiffusionPipeline):
                     output_frames.append(ori_frame)
                     continue
                 
+                # 检查face的数据类型，确保兼容cv2.cvtColor
+                if face.dtype != np.float32:
+                    print(f"[帧{i}] 警告: 面部图像数据类型不是float32，而是{face.dtype}，进行转换")
+                    # 如果是uint8类型，归一化到0-1范围
+                    if face.dtype == np.uint8:
+                        face = face.astype(np.float32) / 255.0
+                    # 如果是其他浮点类型，确保值范围合适
+                    elif np.issubdtype(face.dtype, np.floating):
+                        if np.max(face) > 1.0:
+                            # 如果图像值超过1，归一化到0-1范围
+                            face = face.astype(np.float32) / 255.0
+                        else:
+                            # 如果已经是0-1范围，只需确保类型是float32
+                            face = face.astype(np.float32)
+                    else:
+                        # 其他类型，转换为float32并归一化
+                        face = face.astype(np.float32)
+                        if np.max(face) > 1.0:
+                            face = face / 255.0
+                
+                # 裁剪确保值在0-1范围内
+                face = np.clip(face, 0, 1)
+                
+                # 临时转换为uint8用于OpenCV处理
+                face_for_cv = (face * 255.0).astype(np.uint8)
+                
                 # Convert face from RGB to BGR (for OpenCV)
-                face_bgr = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
+                face_bgr = cv2.cvtColor(face_for_cv, cv2.COLOR_RGB2BGR)
                 
                 # Resize face to 512x512 for enhancement if needed
                 if opt_face_enhancer is not None and opt_face_enhancer.enhancement_method:
@@ -445,12 +471,23 @@ class LipsyncPipeline(DiffusionPipeline):
                 # Warp face back to original position
                 warped_face = cv2.warpAffine(face_bgr, inv_affine_matrix, (frame_w, frame_h))
                 
-                # Blend face with original frame
+                # 将BGR转换回float32格式，范围0-1
                 warped_face = warped_face.astype(np.float32) / 255.0
                 ori_frame_bgr = ori_frame_bgr.astype(np.float32) / 255.0
                 
+                # 混合图像，保持float32格式
                 output_frame = ori_frame_bgr * (1 - mask) + warped_face * mask
-                output_frame = (output_frame * 255.0).astype(np.uint8)
+                
+                # 转换为uint8用于输出/存储
+                if output_frame.dtype != np.uint8:
+                    print(f"将第{i}帧从{output_frame.dtype}转换为uint8用于输出")
+                    # 如果是浮点类型，先确保范围合适
+                    if np.issubdtype(output_frame.dtype, np.floating):
+                        if output_frame.max() <= 1.0:  # 如果最大值小于等于1，说明是0-1范围
+                            output_frame = (output_frame * 255).clip(0, 255)
+                        else:
+                            output_frame = output_frame.clip(0, 255)  # 裁剪到0-255范围
+                output_frame = output_frame.astype(np.uint8)
                 
                 # Convert back to RGB
                 output_frame = cv2.cvtColor(output_frame, cv2.COLOR_BGR2RGB)
@@ -498,7 +535,7 @@ class LipsyncPipeline(DiffusionPipeline):
                     # 检查帧是否包含NaN或Inf值
                     if hasattr(frame, 'dtype') and np.issubdtype(frame.dtype, np.floating) and (np.isnan(frame).any() or np.isinf(frame).any()):
                         print(f"警告: 第{i}帧包含NaN或Inf值，使用0替换")
-                        frame = np.nan_to_num(frame, nan=0, posinf=255, neginf=0)
+                        frame = np.nan_to_num(frame, nan=0, posinf=1.0, neginf=0)
                     
                     # 检查形状是否一致
                     if frame.shape != first_frame_shape:
@@ -506,15 +543,17 @@ class LipsyncPipeline(DiffusionPipeline):
                         # 调整不一致帧的大小
                         frame = cv2.resize(frame, (first_frame_shape[1], first_frame_shape[0]), interpolation=cv2.INTER_LINEAR)
                     
-                    # 确保每一帧都是uint8类型
+                    # 确保每一帧都是uint8类型用于输出
                     if frame.dtype != np.uint8:
-                        print(f"将第{i}帧从{frame.dtype}转换为uint8")
-                        # 如果是浮点类型，先归一化到0-255范围
+                        print(f"将第{i}帧从{frame.dtype}转换为uint8用于输出")
+                        # 如果是浮点类型，先确保范围合适
                         if np.issubdtype(frame.dtype, np.floating):
                             if frame.max() <= 1.0:  # 如果最大值小于等于1，说明是0-1范围
-                                frame = (frame * 255).clip(0, 255)
-                            frame = frame.clip(0, 255)  # 裁剪到0-255范围
-                        frame = frame.astype(np.uint8)
+                                frame = (frame * 255).clip(0, 255).astype(np.uint8)
+                            else:
+                                frame = np.clip(frame, 0, 255).astype(np.uint8)  # 裁剪到0-255范围
+                        else:
+                            frame = frame.astype(np.uint8)
                     
                     valid_frames.append(frame)
                 except Exception as e:

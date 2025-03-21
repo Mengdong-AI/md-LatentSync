@@ -30,7 +30,7 @@ class FaceEnhancer:
         if model_path is None:
             raise ValueError(f"必须提供模型路径!")
             
-        # 检查模型文件是否存在
+            # 检查模型文件是否存在
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"模型文件不存在: {model_path}")
             
@@ -145,7 +145,7 @@ class FaceEnhancer:
             print(f"预处理后图像形状: {img_for_model.shape}, 类型: {img_for_model.dtype}, 值范围: [{np.min(img_for_model)}, {np.max(img_for_model)}]")
             
             return img_for_model
-            
+                
         except Exception as e:
             print(f"预处理图像时出错: {str(e)}")
             traceback.print_exc()
@@ -171,10 +171,30 @@ class FaceEnhancer:
                 print("输入图像为空，无法增强")
                 return img
                 
+            # 确保图像是float32类型
+            if img.dtype != np.float32:
+                print(f"输入图像类型为{img.dtype}，转换为float32")
+                if img.dtype == np.uint8:
+                    # 如果是uint8，转换为0-1范围的float32
+                    img = img.astype(np.float32) / 255.0
+                elif np.issubdtype(img.dtype, np.floating):
+                    # 如果是其他浮点类型，确保范围合适并转换
+                    if np.max(img) > 1.0:
+                        # 如果值超过1，假设是0-255范围，归一化到0-1
+                        img = img.astype(np.float32) / 255.0
+                    else:
+                        # 保持0-1范围
+                        img = img.astype(np.float32)
+                else:
+                    # 其他类型，转换并归一化
+                    img = img.astype(np.float32)
+                    if np.max(img) > 1.0:
+                        img = img / 255.0
+                
             # 检查并处理NaN或Inf值
             if np.isnan(img).any() or np.isinf(img).any():
                 print("警告：输入图像包含NaN或Inf值，将其替换为0")
-                img = np.nan_to_num(img, nan=0, posinf=255, neginf=0)
+                img = np.nan_to_num(img, nan=0, posinf=1.0, neginf=0)
                 
             # 记录原始图像信息
             print(f"输入图像: 形状={img.shape}, 类型={img.dtype}, 非零像素={np.count_nonzero(img)}")
@@ -249,17 +269,17 @@ class FaceEnhancer:
                     
                 print(f"最终结果: 形状={result.shape}, 类型={result.dtype}, 值范围=[{np.min(result)}, {np.max(result)}]")
                 return result
-                
+            
             except Exception as e:
                 print(f"后处理时出错: {str(e)}")
                 traceback.print_exc()
                 return original_img
-                
+        
         except Exception as e:
-            print(f"增强过程中发生未处理的异常: {str(e)}")
+            print(f"增强过程中发生未捕获的错误: {str(e)}")
             traceback.print_exc()
-            # 尝试返回原始图像
-            return img
+            # 如果有原始图像则返回，否则返回输入图像
+            return original_img if 'original_img' in locals() else img
     
     def postprocess(self, img, output, face_landmarks=None):
         """
@@ -268,7 +288,7 @@ class FaceEnhancer:
             img: input image, RGB order
             output: output of the model
             face_landmarks: face landmarks if available
-
+            
         Returns:
             Postprocessed image
         """
@@ -278,11 +298,9 @@ class FaceEnhancer:
             # 确保输出格式兼容
             if output.dtype != np.float32:
                 print(f"正在将输出从 {output.dtype} 转换为 float32")
-                output = output.astype(np.float32)
-                
-            # 修复ONNX提供程序可能导致的CV_16F不兼容问题
-            if output.dtype.name == 'float16':
-                print("检测到float16输出，转换为float32")
+                # 特别处理float16，OpenCV不支持
+                if output.dtype.name == 'float16':
+                    print("检测到float16输出，转换为float32")
                 output = output.astype(np.float32)
                 
             # 从NCHW转换为HWC格式
@@ -295,34 +313,26 @@ class FaceEnhancer:
             
             # 重新调整大小以匹配输入图像
             if out_h != h or out_w != w:
+                # 确保使用float32格式
                 output = cv2.resize(output, (w, h))
                 
-            # 确保值范围为0-1或0-255
+            # 确保值范围为0-1
             output_max = np.max(output)
-            if output_max <= 1.5:
-                # 如果最大值小于1.5，假设范围是0-1，将其转换为0-255
-                output = (output * 255.0).astype(np.uint8)
-            elif output_max > 255.5:
-                # 如果最大值大于255.5，将其裁剪到0-255
-                output = np.clip(output, 0, 255).astype(np.uint8)
-            else:
-                # 否则，假设范围已经是0-255
-                output = output.astype(np.uint8)
+            if output_max > 1.5:
+                # 如果最大值大于1.5，假设范围是0-255，归一化到0-1
+                output = output / 255.0
                 
-            # 确保输出图像与输入图像类型匹配
-            if img.dtype == np.uint8 and output.dtype != np.uint8:
-                output = output.astype(np.uint8)
-            elif img.dtype == np.float32 and output.dtype != np.float32:
-                output = output.astype(np.float32) / 255.0
+            # 确保限制在0-1范围内
+            output = np.clip(output, 0, 1)
+                
+            # 确保输出图像为float32
+            output = output.astype(np.float32)
                 
             # 应用增强强度
             result = img * (1 - self.enhancement_strength) + output * self.enhancement_strength
             
-            # 确保结果与输入图像类型匹配
-            if img.dtype == np.uint8:
-                result = np.clip(result, 0, 255).astype(np.uint8)
-            else:
-                result = np.clip(result, 0, 1).astype(np.float32)
+            # 确保结果为float32且在0-1范围内
+            result = np.clip(result, 0, 1).astype(np.float32)
                 
             # 应用嘴部保护
             if self.mouth_protection and face_landmarks is not None:
@@ -362,7 +372,7 @@ class FaceEnhancer:
                     print(f"应用嘴部保护时出错: {str(e)}")
                     traceback.print_exc()
                     # 继续处理，无需中断
-                    
+            
             print(f"后处理完成，结果形状={result.shape}, 类型={result.dtype}")
             return result
             
