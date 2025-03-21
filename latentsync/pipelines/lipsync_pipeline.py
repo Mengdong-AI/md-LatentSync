@@ -37,6 +37,9 @@ from ..whisper.audio2feature import Audio2Feature
 from ..utils.face_enhancer import FaceEnhancer  # 导入面部增强器
 import tqdm
 import soundfile as sf
+import traceback
+import time
+from decord import cpu
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -289,32 +292,75 @@ class LipsyncPipeline(DiffusionPipeline):
         original_frames = vr[:]  # [T, H, W, C]
         
         # 确保original_frames是标准numpy数组格式
-        if not isinstance(original_frames, np.ndarray):
-            print(f"转换original_frames为numpy数组")
-            original_frames = original_frames.asnumpy() if hasattr(original_frames, "asnumpy") else np.array(original_frames, dtype=np.uint8)
-        
-        # 检查数据类型，确保兼容OpenCV处理
-        if original_frames.dtype != np.uint8 and original_frames.dtype != np.float32:
-            print(f"将original_frames从{original_frames.dtype}转换为uint8")
-            original_frames = original_frames.astype(np.uint8)
-        
-        # 检查 original_frames 是否为可索引对象
-        if not hasattr(original_frames, "__getitem__"):
-            print(f"Warning: Cannot index original_frames, converting to numpy array")
-            try:
-                original_frames = original_frames.asnumpy() if hasattr(original_frames, "asnumpy") else np.array(original_frames)
-            except:
-                print(f"Error: Failed to convert original_frames to indexable object")
-                # 如果转换失败，创建一个空帧列表
-                original_frames = []
-        
-        # 如果 original_frames 为空或无法索引，使用 faces 创建一个空背景
-        if len(original_frames) == 0:
-            print(f"Warning: No original frames loaded, creating blank background")
-            # 从第一个 face 获取尺寸信息
-            face_h, face_w = faces[0, 0].shape[1:3] 
-            # 创建一个黑色背景帧列表
-            original_frames = [np.zeros((face_h*2, face_w*2, 3), dtype=np.uint8) for _ in range(min(len(faces), total_frames))]
+        try:
+            if original_frames is None:
+                print("警告: original_frames为None")
+                # 创建默认帧
+                if len(faces) > 0:
+                    # 根据检测到的人脸创建相应大小的空帧
+                    face_h, face_w = faces[0, 0].shape[1:3]
+                    print(f"创建默认帧，大小: {face_w*2}x{face_h*2}")
+                    original_frames = np.zeros((min(len(faces), total_frames), face_h*2, face_w*2, 3), dtype=np.uint8)
+                else:
+                    # 创建标准大小的空帧
+                    print(f"创建标准大小默认帧: 512x512")
+                    original_frames = np.zeros((total_frames, 512, 512, 3), dtype=np.uint8)
+            
+            # 检查是否需要转换为numpy数组
+            if not isinstance(original_frames, np.ndarray):
+                print(f"警告: original_frames不是numpy数组，进行转换，当前类型: {type(original_frames)}")
+                try:
+                    if hasattr(original_frames, "asnumpy"):
+                        original_frames = original_frames.asnumpy()
+                    else:
+                        original_frames = np.array(original_frames)
+                    print(f"转换后的original_frames形状: {original_frames.shape}, 类型: {original_frames.dtype}")
+                except Exception as e:
+                    print(f"转换original_frames为numpy数组时出错: {str(e)}")
+                    # 创建备用空帧
+                    if len(faces) > 0:
+                        face_h, face_w = faces[0, 0].shape[1:3]
+                        original_frames = np.zeros((min(len(faces), total_frames), face_h*2, face_w*2, 3), dtype=np.uint8)
+                    else:
+                        original_frames = np.zeros((total_frames, 512, 512, 3), dtype=np.uint8)
+            
+            # 检查数据类型，确保与OpenCV兼容
+            if original_frames.dtype != np.uint8:
+                print(f"警告: original_frames类型不是uint8，当前类型: {original_frames.dtype}")
+                # 对于浮点类型，进行归一化和转换
+                if np.issubdtype(original_frames.dtype, np.floating):
+                    data_min = np.min(original_frames)
+                    data_max = np.max(original_frames)
+                    print(f"浮点数据范围: [{data_min}, {data_max}]")
+                    
+                    # 根据数据范围归一化
+                    if data_max <= 1.5:
+                        print("浮点值范围在0-1之间，缩放到0-255")
+                        original_frames = (original_frames * 255).clip(0, 255)
+                    elif data_max > 255.5:
+                        print("浮点值超过255，裁剪到0-255范围")
+                        original_frames = original_frames.clip(0, 255)
+                
+                # 转换为uint8类型
+                print(f"将original_frames从{original_frames.dtype}转换为uint8")
+                original_frames = original_frames.astype(np.uint8)
+                
+            # 检查是否包含NaN或Inf值
+            if np.isnan(original_frames).any() or np.isinf(original_frames).any():
+                print("警告: original_frames包含NaN或Inf值，将其替换为0")
+                original_frames = np.nan_to_num(original_frames, nan=0, posinf=255, neginf=0)
+                
+            print(f"原始帧处理完成 - 形状: {original_frames.shape}, 类型: {original_frames.dtype}")
+                
+        except Exception as e:
+            print(f"处理original_frames时出错: {str(e)}")
+            traceback.print_exc()
+            # 如果转换失败，创建一个空帧列表
+            if len(faces) > 0:
+                face_h, face_w = faces[0, 0].shape[1:3]
+                original_frames = np.zeros((min(len(faces), total_frames), face_h*2, face_w*2, 3), dtype=np.uint8)
+            else:
+                original_frames = np.zeros((total_frames, 512, 512, 3), dtype=np.uint8)
         
         # 获取原始视频的高度和宽度
         if len(original_frames) > 0:
@@ -361,7 +407,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 face_bgr = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
                 
                 # Resize face to 512x512 for enhancement if needed
-                if opt_face_enhancer is not None and opt_face_enhancer.enable:
+                if opt_face_enhancer is not None and opt_face_enhancer.enhancement_method:
                     try:
                         print(f"[帧{i}] 开始增强面部，原始尺寸: {face_bgr.shape}")
                         face_enhanced = cv2.resize(face_bgr, (512, 512), interpolation=cv2.INTER_LANCZOS4)
@@ -381,6 +427,7 @@ class LipsyncPipeline(DiffusionPipeline):
                             print(f"[帧{i}] 缩放回原始尺寸后 - 形状: {face_bgr.shape}")
                     except Exception as e:
                         print(f"[帧{i}] 面部增强过程出错: {str(e)}")
+                        traceback.print_exc()
                         # 如果增强失败，保持原样
                         pass
                 
@@ -411,6 +458,7 @@ class LipsyncPipeline(DiffusionPipeline):
             
             except Exception as e:
                 print(f"Error processing frame {i}: {e}")
+                traceback.print_exc()
                 # If error, try to use original frame or create a blank one
                 try:
                     if len(original_frames) > 0 and i < len(original_frames):
@@ -424,6 +472,7 @@ class LipsyncPipeline(DiffusionPipeline):
                         output_frames.append(blank_frame)
                 except Exception as e2:
                     print(f"Error creating fallback frame: {e2}")
+                    traceback.print_exc()
                     # 最后的备用方案：创建一个小的空白帧
                     output_frames.append(np.zeros((256, 256, 3), dtype=np.uint8))
         
@@ -432,8 +481,63 @@ class LipsyncPipeline(DiffusionPipeline):
             print("Warning: No frames processed, creating a blank frame")
             output_frames = [np.zeros((original_h, original_w, 3), dtype=np.uint8)]
         
+        # 在stack frames前检查所有帧的形状和类型
+        if len(output_frames) > 0:
+            print(f"处理完成的帧数: {len(output_frames)}")
+            # 检查所有帧是否具有相同的形状
+            first_frame_shape = output_frames[0].shape
+            valid_frames = []
+            for i, frame in enumerate(output_frames):
+                try:
+                    # 检查帧是否为None或空数组
+                    if frame is None or (hasattr(frame, 'size') and frame.size == 0):
+                        print(f"警告: 第{i}帧为空，使用黑色帧替代")
+                        valid_frames.append(np.zeros(first_frame_shape, dtype=np.uint8))
+                        continue
+                        
+                    # 检查帧是否包含NaN或Inf值
+                    if hasattr(frame, 'dtype') and np.issubdtype(frame.dtype, np.floating) and (np.isnan(frame).any() or np.isinf(frame).any()):
+                        print(f"警告: 第{i}帧包含NaN或Inf值，使用0替换")
+                        frame = np.nan_to_num(frame, nan=0, posinf=255, neginf=0)
+                    
+                    # 检查形状是否一致
+                    if frame.shape != first_frame_shape:
+                        print(f"警告: 第{i}帧形状与第一帧不一致: {frame.shape} vs {first_frame_shape}")
+                        # 调整不一致帧的大小
+                        frame = cv2.resize(frame, (first_frame_shape[1], first_frame_shape[0]), interpolation=cv2.INTER_LINEAR)
+                    
+                    # 确保每一帧都是uint8类型
+                    if frame.dtype != np.uint8:
+                        print(f"将第{i}帧从{frame.dtype}转换为uint8")
+                        # 如果是浮点类型，先归一化到0-255范围
+                        if np.issubdtype(frame.dtype, np.floating):
+                            if frame.max() <= 1.0:  # 如果最大值小于等于1，说明是0-1范围
+                                frame = (frame * 255).clip(0, 255)
+                            frame = frame.clip(0, 255)  # 裁剪到0-255范围
+                        frame = frame.astype(np.uint8)
+                    
+                    valid_frames.append(frame)
+                except Exception as e:
+                    print(f"处理第{i}帧时出错: {str(e)}")
+                    traceback.print_exc()
+                    # 使用黑色帧代替
+                    valid_frames.append(np.zeros(first_frame_shape, dtype=np.uint8))
+            
+            # 更新output_frames为有效帧
+            output_frames = valid_frames
+            print(f"有效帧数: {len(output_frames)}")
+        
         # Stack frames
-        output_frames = np.stack(output_frames, axis=0)
+        try:
+            print(f"堆叠帧 - 检查第一帧形状: {output_frames[0].shape if len(output_frames) > 0 else 'None'}")
+            output_frames = np.stack(output_frames, axis=0)
+            print(f"堆叠完成 - 结果形状: {output_frames.shape}")
+        except Exception as e:
+            print(f"堆叠帧时出错: {str(e)}")
+            traceback.print_exc()
+            # 最后的救急措施：创建一个单帧视频
+            print("创建备用单帧视频")
+            output_frames = np.array([np.zeros((original_h, original_w, 3), dtype=np.uint8)])
         
         return output_frames
 
@@ -531,6 +635,35 @@ class LipsyncPipeline(DiffusionPipeline):
                 
             model_path = os.path.join(root_dir, f"models/faceenhancer/{model_filename}")
             
+            # 检查模型文件是否存在
+            if not os.path.exists(model_path):
+                print(f"警告: 模型文件不存在: {model_path}")
+                print(f"当前工作目录: {os.getcwd()}")
+                
+                # 尝试在工作目录中查找
+                alt_path = os.path.join(os.getcwd(), "models/faceenhancer", model_filename)
+                if os.path.exists(alt_path):
+                    print(f"在工作目录中找到模型文件: {alt_path}")
+                    model_path = alt_path
+                else:
+                    # 如果没有找到文件，尝试列出父目录内容
+                    parent_dir = os.path.dirname(os.path.dirname(model_path))
+                    print(f"查看可能的模型目录: {parent_dir}")
+                    try:
+                        if os.path.exists(parent_dir):
+                            print(f"目录内容:")
+                            for root, dirs, files in os.walk(parent_dir):
+                                print(f"  {root}:")
+                                for d in dirs:
+                                    print(f"    [DIR] {d}")
+                                for f in files:
+                                    if ".onnx" in f:
+                                        print(f"    [ONNX] {f}")
+                    except Exception as e:
+                        print(f"列出目录内容时出错: {str(e)}")
+            else:
+                print(f"找到模型文件: {model_path}")
+                
             print(f"初始化面部增强器 - 方法: {face_enhance_method}, 模型路径: {model_path}")
             
             self.face_enhancer = FaceEnhancer(
@@ -679,12 +812,12 @@ class LipsyncPipeline(DiffusionPipeline):
         
         # 使用新的restore_video方法
         synced_video_frames = self.restore_video(
-            faces=faces_array,
-            boxes=boxes_array,
-            affine_matrices=affine_matrices_array,
-            source_video_path=video_path,
-            opt_face_enhancer=self.face_enhancer,
-            original_aspect_ratio=True
+            face_info=faces_array,
+            original_frames=faces_array,
+            mouth_landmarks_seqs=boxes_array,
+            h=height,
+            w=width,
+            crop_info=affine_matrices_array
         )
         # masked_video_frames = self.restore_video(
         #     torch.cat(masked_video_frames), video_frames, boxes, video_path, self.face_enhancer
@@ -742,3 +875,78 @@ class LipsyncPipeline(DiffusionPipeline):
 
         command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
         subprocess.run(command, shell=True)
+
+    def process_audio_video(self, audio_path, video_path, whisper_chunks, start_seconds=0.0, end_seconds=None, pitch_factor=1.5, sr=48000, fps=None):
+        """
+        Process audio and video.
+        
+        Args:
+            audio_path (str): Path to audio file.
+            video_path (str): Path to video file.
+            whisper_chunks (list): List of whisper chunks.
+            start_seconds (float): Start time in seconds.
+            end_seconds (float): End time in seconds.
+            pitch_factor (float): Pitch factor.
+            sr (int): Sample rate.
+            fps (int): Frames per second.
+            
+        Returns:
+            audio_frames (np.ndarray): Audio frames.
+            video_frames (np.ndarray): Video frames.
+        """
+        # 先检查视频和音频是否存在
+        print(f"处理音频 {audio_path} 和视频 {video_path}")
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(f"音频文件不存在: {audio_path}")
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"视频文件不存在: {video_path}")
+            
+        # 加载音频
+        audio, sr_orig = self.load_audio(audio_path, sr=sr, start_seconds=start_seconds, end_seconds=end_seconds)
+        
+        # 获取视频信息
+        vr_info = VideoReader(video_path, height=None, width=None)
+        width = vr_info[0].shape[1]
+        height = vr_info[0].shape[0]
+        total_frames = len(vr_info)
+        actual_fps = vr_info.get_avg_fps()
+        if fps is None:
+            fps = actual_fps
+        print(f"视频分辨率: {width}x{height}, 总帧数: {total_frames}, 原始FPS: {actual_fps}, 使用FPS: {fps}")
+            
+        # 执行面部检测
+        start_time = time.time()
+        print("开始进行面部检测...")
+        faces_array, boxes_array, affine_matrices_array = self.detect_faces(video_path, start_time_seconds=start_seconds, end_time_seconds=end_seconds)
+        
+        # 检查检测结果
+        if len(faces_array) == 0:
+            print("未检测到任何人脸，将返回原始视频")
+            # 读取原始视频帧
+            vr = VideoReader(video_path, num_threads=4, ctx=cpu(0))
+            original_frames = vr[:]
+            return audio, original_frames.asnumpy() if hasattr(original_frames, "asnumpy") else np.array(original_frames)
+            
+        print(f"检测到 {len(faces_array)} 帧的人脸数据")
+        
+        # 使用新的restore_video方法
+        synced_video_frames = self.restore_video(
+            faces=faces_array,
+            boxes=boxes_array,
+            affine_matrices=affine_matrices_array,
+            source_video_path=video_path,
+            opt_face_enhancer=self.face_enhancer,
+            original_aspect_ratio=True
+        )
+        # masked_video_frames = self.restore_video(
+        #     faces=masked_faces_array, 
+        #     boxes=boxes_array,
+        #     affine_matrices=affine_matrices_array,
+        #     source_video_path=video_path,
+        #     opt_face_enhancer=None,
+        #     original_aspect_ratio=True
+        # )
+        
+        print(f"视频处理完成")
+        
+        return audio, synced_video_frames
