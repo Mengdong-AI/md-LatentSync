@@ -280,6 +280,10 @@ class LipsyncPipeline(DiffusionPipeline):
         Returns:
             np.ndarray: Restored video, with shape [T, H, W, 3].
         """
+        # Create debug directory if not exists
+        debug_dir = os.path.join(os.path.dirname(source_video_path), "debug_frames")
+        os.makedirs(debug_dir, exist_ok=True)
+        
         # Read original video
         vr = VideoReader(source_video_path)
         # Get total frame count
@@ -333,6 +337,10 @@ class LipsyncPipeline(DiffusionPipeline):
                     # 如果没有原始帧，创建黑色背景
                     ori_frame = np.zeros((original_h, original_w, 3), dtype=np.uint8)
                 
+                # Save original frame for first 5 frames
+                if i < 5:
+                    cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_1_original.png"), cv2.cvtColor(ori_frame, cv2.COLOR_RGB2BGR))
+                
                 # Convert to BGR for OpenCV processing
                 ori_frame_bgr = cv2.cvtColor(ori_frame, cv2.COLOR_RGB2BGR)
                 
@@ -350,11 +358,19 @@ class LipsyncPipeline(DiffusionPipeline):
                 # Convert face from RGB to BGR (for OpenCV)
                 face_bgr = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
                 
+                # Save aligned face for first 5 frames
+                if i < 5:
+                    cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_2_aligned_face.png"), face_bgr)
+                
                 # Resize face to 512x512 for enhancement if needed
                 if opt_face_enhancer is not None and opt_face_enhancer.enable:
                     face_enhanced = cv2.resize(face_bgr, (512, 512), interpolation=cv2.INTER_LANCZOS4)
                     face_enhanced = opt_face_enhancer.enhance(face_enhanced)
                     face_bgr = cv2.resize(face_enhanced, (face_bgr.shape[1], face_bgr.shape[0]), interpolation=cv2.INTER_LANCZOS4)
+                    
+                    # Save enhanced face for first 5 frames
+                    if i < 5:
+                        cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_3_enhanced_face.png"), face_bgr)
                 
                 # Compute inverse affine matrix
                 inv_affine_matrix = cv2.invertAffineTransform(affine_matrix)
@@ -370,6 +386,11 @@ class LipsyncPipeline(DiffusionPipeline):
                 # Warp face back to original position
                 warped_face = cv2.warpAffine(face_bgr, inv_affine_matrix, (frame_w, frame_h))
                 
+                # Save warped face and mask for first 5 frames
+                if i < 5:
+                    cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_4_warped_face.png"), warped_face)
+                    cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_4_mask.png"), (mask * 255).astype(np.uint8))
+                
                 # Blend face with original frame
                 warped_face = warped_face.astype(np.float32) / 255.0
                 ori_frame_bgr = ori_frame_bgr.astype(np.float32) / 255.0
@@ -379,6 +400,11 @@ class LipsyncPipeline(DiffusionPipeline):
                 
                 # Convert back to RGB
                 output_frame = cv2.cvtColor(output_frame, cv2.COLOR_BGR2RGB)
+                
+                # Save final result for first 5 frames
+                if i < 5:
+                    cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_5_final.png"), cv2.cvtColor(output_frame, cv2.COLOR_RGB2BGR))
+                
                 output_frames.append(output_frame)
             
             except Exception as e:
@@ -407,6 +433,7 @@ class LipsyncPipeline(DiffusionPipeline):
         # Stack frames
         output_frames = np.stack(output_frames, axis=0)
         
+        print(f"Debug frames saved to: {debug_dir}")
         return output_frames
 
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
