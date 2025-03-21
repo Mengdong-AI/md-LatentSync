@@ -88,6 +88,42 @@ class FaceEnhancer:
                 
             print(f"预处理图像，形状: {img.shape}, 类型: {img.dtype}, 值范围: [{np.min(img)}, {np.max(img)}]")
             
+            # 保存最原始的输入图像用于调试（不做任何处理）
+            try:
+                debug_dir = "enhance_debug"
+                os.makedirs(debug_dir, exist_ok=True)
+                raw_input_path = os.path.join(debug_dir, "raw_input.png")
+                # 转换为uint8以便保存
+                if np.max(img) <= 1.0:
+                    raw_input = (img * 255).clip(0, 255).astype(np.uint8)
+                else:
+                    raw_input = img.clip(0, 255).astype(np.uint8)
+                # 保存原始RGB格式
+                cv2.imwrite(raw_input_path, cv2.cvtColor(raw_input, cv2.COLOR_RGB2BGR))
+                print(f"已保存最原始的输入图像到 {raw_input_path}")
+            except Exception as e:
+                print(f"保存原始输入图像时出错: {str(e)}")
+                
+            # 如果是uint8类型并且是BGR输入格式（来自OpenCV）
+            # 这里判断一下当前处理的图像是否已经是BGR格式（通常是从CV处理过程中来的）
+            is_already_bgr = False
+            if img.dtype == np.uint8 and self.enhancement_method == 'gpen':
+                # 如果图像结构看起来像是BGR格式（蓝色通道较大）
+                # 检查像素样本，判断是否已经是BGR格式
+                blue_avg = np.mean(img[:,:,0])
+                green_avg = np.mean(img[:,:,1])
+                red_avg = np.mean(img[:,:,2])
+                print(f"通道平均值 - Blue: {blue_avg}, Green: {green_avg}, Red: {red_avg}")
+                
+                # 启发式方法：检查是否像是BGR格式（蓝色值更大，通常在面部和肤色区域）
+                if blue_avg > red_avg * 1.2:  # 如果蓝色通道明显大于红色通道，说明可能已经是BGR
+                    print("检测到图像可能已经是BGR格式")
+                    is_already_bgr = True
+                    # 保存直接复制的图像
+                    bgr_input_path = os.path.join(debug_dir, "detected_bgr_input.png")
+                    # 直接保存，无需转换颜色通道
+                    cv2.imwrite(bgr_input_path, img.clip(0, 255).astype(np.uint8))
+                
             # 检查图像是否为空或包含NaN/Inf
             if img.size == 0 or np.isnan(img).any() or np.isinf(img).any():
                 print(f"警告: 图像包含无效数据. 大小: {img.size}, NaN: {np.isnan(img).any()}, Inf: {np.isinf(img).any()}")
@@ -159,16 +195,21 @@ class FaceEnhancer:
             
             # GPEN模型需要特殊处理
             if self.enhancement_method == 'gpen':
-                # 针对BGR输入的模型，颜色通道需要反转
-                # 从RGB转为BGR，因为GPEN模型通常以BGR格式训练
-                print("检测到GPEN模型，将RGB转换为BGR")
-                img_for_model = img_for_model[:, :, ::-1]
+                # 只有当图像尚未是BGR格式时才进行转换
+                if not is_already_bgr:
+                    # 针对BGR输入的模型，颜色通道需要反转
+                    # 从RGB转为BGR，因为GPEN模型通常以BGR格式训练
+                    print("检测到GPEN模型，将RGB转换为BGR")
+                    img_for_model = img_for_model[:, :, ::-1]
+                else:
+                    print("图像已经是BGR格式，无需转换")
                 
                 # 保存GPEN特殊处理后的图像用于调试
                 try:
                     gpen_input_path = os.path.join(debug_dir, "gpen_input.png")
                     gpen_input = (img_for_model * 255).clip(0, 255).astype(np.uint8)
-                    cv2.imwrite(gpen_input_path, gpen_input)  # 已经是BGR，不需要转换
+                    # 直接保存BGR格式（不要转换）
+                    cv2.imwrite(gpen_input_path, gpen_input)
                     print(f"已保存GPEN输入图像到 {gpen_input_path}")
                 except Exception as e:
                     print(f"保存GPEN输入图像时出错: {str(e)}")
@@ -316,34 +357,125 @@ class FaceEnhancer:
                 # 如果是GPEN模型，检查是否有额外输入参数
                 if self.enhancement_method == 'gpen':
                     print("准备GPEN模型的输入")
-                    for i, input_info in enumerate(self.ort_session.get_inputs()):
-                        if i > 0:  # 第一个输入已经处理过
-                            print(f"额外输入 {i}: {input_info.name}, 形状: {input_info.shape}")
+                    try:
+                        # 检查GPEN输入是否正确
+                        print(f"GPEN输入: 形状={preprocessed.shape}, 类型={preprocessed.dtype}")
+                        print(f"输入数据范围: [{np.min(preprocessed)}, {np.max(preprocessed)}]")
+                        print(f"输入数据非零元素比例: {np.count_nonzero(preprocessed)/preprocessed.size*100:.2f}%")
+                        
+                        # 特别处理GPEN模型的各种输入规范
+                        # 有些GPEN模型需要特定的输入名称和参数
+                        found_valid_input = False
+                        for i, input_info in enumerate(self.ort_session.get_inputs()):
+                            print(f"输入 {i}: {input_info.name}, 形状: {input_info.shape}")
+                            # 检查是否有特定的输入名称
+                            if any(keyword in input_info.name.lower() for keyword in ["face", "img", "input", "x", "image"]):
+                                print(f"找到主要输入: {input_info.name}")
+                                if i == 0:  # 如果是第一个输入，直接使用
+                                    input_feed = {input_info.name: preprocessed}
+                                    found_valid_input = True
+                                else:  # 如果不是第一个，建立新的输入字典
+                                    new_input_feed = {input_info.name: preprocessed}
+                                    # 复制其它输入
+                                    for k in input_feed:
+                                        if k != input_name:  # 不复制原始输入
+                                            new_input_feed[k] = input_feed[k]
+                                    input_feed = new_input_feed
+                                    found_valid_input = True
                             
-                            # 处理可能的额外输入
-                            if "return_rgb" in input_info.name.lower():
-                                # GPEN可能有一个控制输出颜色空间的布尔输入
-                                input_feed[input_info.name] = np.array([True], dtype=np.bool_)
-                                print(f"设置 {input_info.name} = True")
+                            # 处理额外参数
+                            if i > 0 or not found_valid_input:
+                                if "return_rgb" in input_info.name.lower():
+                                    input_feed[input_info.name] = np.array([True], dtype=np.bool_)
+                                    print(f"设置 {input_info.name} = True")
+                                elif "return_bgr" in input_info.name.lower():
+                                    input_feed[input_info.name] = np.array([False], dtype=np.bool_)
+                                    print(f"设置 {input_info.name} = False")
+                                elif "aligned" in input_info.name.lower():
+                                    input_feed[input_info.name] = np.array([True], dtype=np.bool_)
+                                    print(f"设置 {input_info.name} = True")
+                                # 可以添加更多特殊参数处理
+                    except Exception as e:
+                        print(f"设置GPEN模型输入时出错: {str(e)}")
+                        traceback.print_exc()
                 
-                # 执行推理
+                # 执行推理前，再次检查输入
+                print(f"执行推理，输入字典: {list(input_feed.keys())}")
+                for k, v in input_feed.items():
+                    if hasattr(v, 'shape'):
+                        print(f"  输入 {k}: 形状={v.shape}, 类型={v.dtype}")
+                        
+                # 执行模型推理
+                start_time = time.time()
                 outputs = self.ort_session.run(None, input_feed)
-                print(f"ONNX推理完成，输出长度: {len(outputs)}")
+                end_time = time.time()
+                print(f"ONNX推理完成，耗时: {end_time - start_time:.2f}秒，输出长度: {len(outputs)}")
+                
+                # 检查每个输出
+                for i, out in enumerate(outputs):
+                    if hasattr(out, 'shape'):
+                        print(f"输出 {i}: 形状={out.shape}, 类型={out.dtype}")
+                        print(f"     值范围=[{np.min(out)}, {np.max(out)}], 非零比例={np.count_nonzero(out)/out.size*100:.2f}%")
+                    else:
+                        print(f"输出 {i}: 类型={type(out)}")
                 
                 # 检查输出是否有效
                 if len(outputs) == 0:
                     print("模型未产生输出，返回原始图像")
                     return original_img
-                    
-                output = outputs[0]
-                print(f"模型输出: 形状={output.shape}, 类型={output.dtype}, 值范围=[{np.min(output)}, {np.max(output)}]")
+                
+                # 尝试找到最有效的输出（非零元素最多的）
+                best_output_idx = 0
+                best_nonzero_ratio = 0
+                for i, out in enumerate(outputs):
+                    if hasattr(out, 'size') and out.size > 0:
+                        nonzero_ratio = np.count_nonzero(out) / out.size
+                        if nonzero_ratio > best_nonzero_ratio:
+                            best_nonzero_ratio = nonzero_ratio
+                            best_output_idx = i
+                
+                if best_output_idx != 0:
+                    print(f"使用非零元素比例最高的输出 {best_output_idx}")
+                    output = outputs[best_output_idx]
+                else:
+                    output = outputs[0]
+                
+                # 检查是否为全零输出
+                if np.all(output == 0):
+                    print("警告: 所有输出都是全零数组，返回原始图像")
+                    return original_img
+                
+                print(f"使用输出: 形状={output.shape}, 类型={output.dtype}, 值范围=[{np.min(output)}, {np.max(output)}]")
                 print(f"输出非零元素数量: {np.count_nonzero(output)}/{output.size} ({np.count_nonzero(output)/output.size*100:.2f}%)")
                 
                 # 保存原始模型输出用于调试
                 try:
-                    # 从NCHW转换回HWC用于保存
                     if len(output.shape) == 4:  # NCHW格式
-                        raw_output_vis = output[0].transpose(1, 2, 0)
+                        # 检测是否为零数组
+                        if np.all(output == 0):
+                            print("警告: 模型输出为全零数组")
+                            # 尝试检查其他可能的输出
+                            for i, out in enumerate(outputs):
+                                if i > 0 and not np.all(out == 0):
+                                    print(f"使用备选输出 {i}，形状: {out.shape}")
+                                    output = out
+                                    break
+                        
+                        # 如果仍然是全零，尝试直接将预处理后的图像作为输出
+                        if np.all(output == 0) and self.enhancement_method == 'gpen':
+                            print("模型输出仍为零，尝试使用预处理后的图像")
+                            # 使用预处理后的图像，但从NCHW转回NHWC
+                            output = preprocessed
+                            # 如果调用失败，可能GPEN不适用，返回原图
+                            if np.all(output == 0):
+                                print("无法恢复有效输出，返回原始图像")
+                                return original_img
+                    
+                        # 从NCHW转换回HWC用于保存
+                        if len(output.shape) == 4:  # NCHW格式
+                            raw_output_vis = output[0].transpose(1, 2, 0)
+                        else:
+                            raw_output_vis = output
                     else:
                         raw_output_vis = output
                     
@@ -433,43 +565,104 @@ class FaceEnhancer:
                 
             # 从NCHW转换为HWC格式
             if len(output.shape) == 4:  # NCHW格式
+                print(f"将输出从NCHW格式转换为HWC格式: {output.shape}")
                 output = output[0].transpose(1, 2, 0)
+                print(f"转换后形状: {output.shape}")
+            elif len(output.shape) == 3 and output.shape[0] == 3:  # CHW格式
+                print(f"将输出从CHW格式转换为HWC格式: {output.shape}")
+                output = output.transpose(1, 2, 0)
+                print(f"转换后形状: {output.shape}")
                 
             # 保存转换后的输出用于调试
             try:
                 transposed_debug_path = os.path.join(debug_dir, "transposed_output.png")
-                # 确保值在有效范围内
-                if np.max(output) <= 1.0:
-                    transposed_debug = (output * 255).clip(0, 255).astype(np.uint8)
-                else:
-                    transposed_debug = output.clip(0, 255).astype(np.uint8)
+                # 检查是否需要归一化值
+                print(f"转置后输出值范围: [{np.min(output)}, {np.max(output)}]")
+                if output.size > 0:  # 确保数组不为空
+                    if np.max(output) <= 1.0:
+                        transposed_debug = (output * 255).clip(0, 255).astype(np.uint8)
+                    else:
+                        transposed_debug = output.clip(0, 255).astype(np.uint8)
                 
-                cv2.imwrite(transposed_debug_path, cv2.cvtColor(transposed_debug, cv2.COLOR_RGB2BGR))
-                print(f"已保存转置后输出到 {transposed_debug_path}")
+                    # 使用GPEN特殊处理
+                    if self.enhancement_method == 'gpen':
+                        # 直接保存BGR格式
+                        print("GPEN输出特殊处理：保存为BGR格式")
+                        cv2.imwrite(transposed_debug_path, transposed_debug)
+                    else:
+                        # 其他格式转换为BGR保存
+                        cv2.imwrite(transposed_debug_path, cv2.cvtColor(transposed_debug, cv2.COLOR_RGB2BGR))
+                    print(f"已保存转置后输出到 {transposed_debug_path}")
+                else:
+                    print("警告: 输出数组为空，无法保存调试图像")
             except Exception as e:
                 print(f"保存转置后输出时出错: {str(e)}")
                 traceback.print_exc()
             
             h, w, c = img.shape
-            out_h, out_w, out_c = output.shape
             
-            print(f"输入尺寸: {w}x{h}, 输出尺寸: {out_w}x{out_h}")
+            # 检查输出通道数
+            if len(output.shape) == 3:
+                out_h, out_w, out_c = output.shape
+            else:
+                print(f"警告: 输出形状不是3维 - {output.shape}")
+                # 如果无法处理的维度，直接返回原图
+                return img
+            
+            print(f"输入尺寸: {w}x{h}, 输出尺寸: {out_w}x{out_h}, 输入通道: {c}, 输出通道: {out_c}")
+            
+            # 检查输出通道是否正确
+            if out_c != 3:
+                print(f"警告: 输出通道数不是3而是{out_c}，尝试修复")
+                # 简单策略：如果是单通道，扩展为3通道；如果是四通道，取前3通道
+                if out_c == 1:
+                    output = np.repeat(output, 3, axis=2)
+                elif out_c > 3:
+                    output = output[:, :, :3]
+                out_h, out_w, out_c = output.shape
+                print(f"修复后输出形状: {output.shape}")
             
             # GPEN模型需要特殊处理
+            is_output_bgr = False
             if self.enhancement_method == 'gpen':
-                print("检测到GPEN模型输出，将BGR转换为RGB")
-                # 从BGR转回RGB
-                output = output[:, :, ::-1]
+                # 检查输出是否已经是BGR格式
+                blue_avg = np.mean(output[:,:,0])
+                green_avg = np.mean(output[:,:,1])
+                red_avg = np.mean(output[:,:,2])
+                print(f"输出通道平均值 - 通道0: {blue_avg}, 通道1: {green_avg}, 通道2: {red_avg}")
+                
+                if blue_avg > red_avg * 1.2:
+                    # 如果第一个通道值明显大于第三个通道，可能是BGR格式
+                    print("检测到GPEN输出可能是BGR格式")
+                    is_output_bgr = True
+                
+                # 保存原始的输出格式
+                try:
+                    original_output_path = os.path.join(debug_dir, "original_output_format.png")
+                    original_output = output.clip(0, 1) if np.max(output) <= 1.0 else output.clip(0, 255) / 255.0
+                    original_output = (original_output * 255).astype(np.uint8)
+                    
+                    # 直接保存，保持原始通道顺序
+                    cv2.imwrite(original_output_path, original_output)
+                    print(f"已保存原始通道顺序的输出到 {original_output_path}")
+                except Exception as e:
+                    print(f"保存原始输出格式时出错: {str(e)}")
+                
+                # 需要将BGR转换为RGB用于后续处理
+                if is_output_bgr:
+                    print("检测到GPEN模型输出是BGR格式，将BGR转换为RGB用于后续处理")
+                    # 从BGR转回RGB（颜色通道翻转）
+                    output = output[:, :, ::-1]
+                else:
+                    print("GPEN输出可能已经是RGB格式，或者未检测到明显的BGR特征")
                 
                 # 保存颜色转换后的GPEN输出
                 try:
                     gpen_output_path = os.path.join(debug_dir, "gpen_output_rgb.png")
-                    if np.max(output) <= 1.0:
-                        gpen_output = (output * 255).clip(0, 255).astype(np.uint8)
-                    else:
-                        gpen_output = output.clip(0, 255).astype(np.uint8)
+                    output_norm = output.clip(0, 1) if np.max(output) <= 1.0 else output.clip(0, 255) / 255.0
+                    gpen_output = (output_norm * 255).astype(np.uint8)
                     cv2.imwrite(gpen_output_path, cv2.cvtColor(gpen_output, cv2.COLOR_RGB2BGR))
-                    print(f"已保存GPEN RGB输出到 {gpen_output_path}")
+                    print(f"已保存GPEN输出(转换为RGB后)到 {gpen_output_path}")
                 except Exception as e:
                     print(f"保存GPEN RGB输出时出错: {str(e)}")
                     traceback.print_exc()
