@@ -198,97 +198,52 @@ class FaceEnhancer:
         try:
             print(f"[DEBUG] 后处理开始，输入数据形状: {img.shape}, 类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
             
-            try:
-                # 如果输出是float16类型，先转换为float32
-                if img.dtype == np.float16:
-                    print("[DEBUG] 检测到float16类型，转换为float32")
-                    img = img.astype(np.float32)
-                    print(f"[DEBUG] 转换后类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
-            except Exception as e:
-                print(f"[ERROR] 数据类型转换失败: {str(e)}")
-                print(f"[ERROR] 错误类型: {type(e)}")
-                import traceback
-                print(f"[ERROR] 堆栈跟踪:\n{traceback.format_exc()}")
-                raise
+            # 确保数据类型是 float32
+            if img.dtype != np.float32:
+                print(f"[DEBUG] 将数据类型从 {img.dtype} 转换为 float32")
+                img = img.astype(np.float32)
             
             try:
-                # 如果输出是4D张量(NCHW)，去掉批次维度
-                if len(img.shape) == 4:
-                    img = img[0]
-                    print(f"[DEBUG] 去除批次维度后形状: {img.shape}")
-            except Exception as e:
-                print(f"[ERROR] 去除批次维度失败: {str(e)}")
-                print(f"[ERROR] 错误类型: {type(e)}")
-                import traceback
-                print(f"[ERROR] 堆栈跟踪:\n{traceback.format_exc()}")
-                raise
-            
-            try:
-                # 从CHW转换回HWC
-                img = img.transpose(1, 2, 0)
+                # 从 NCHW 转换为 HWC
+                img = np.squeeze(img)  # 移除批次维度
+                img = img.transpose(1, 2, 0)  # CHW -> HWC
                 print(f"[DEBUG] 转置后形状: {img.shape}, 类型: {img.dtype}")
             except Exception as e:
                 print(f"[ERROR] 转置操作失败: {str(e)}")
-                print(f"[ERROR] 错误类型: {type(e)}")
                 import traceback
-                print(f"[ERROR] 转置错误堆栈:\n{traceback.format_exc()}")
+                print(f"[ERROR] 堆栈跟踪:\n{traceback.format_exc()}")
                 raise
             
             try:
-                # 从[-1, 1]转换回[0, 1]
-                img = (img + 1) * 0.5
-                print(f"[DEBUG] 转换到[0,1]范围后的值范围: [{img.min()}, {img.max()}], 类型: {img.dtype}")
+                # 从 [-1, 1] 转换到 [0, 1]
+                img = (img + 1) / 2
+                img = np.clip(img, 0, 1)
+                print(f"[DEBUG] 值范围调整后: [{img.min()}, {img.max()}]")
             except Exception as e:
-                print(f"[ERROR] 值范围转换失败: {str(e)}")
-                print(f"[ERROR] 错误类型: {type(e)}")
+                print(f"[ERROR] 值范围调整失败: {str(e)}")
                 import traceback
-                print(f"[ERROR] 值范围转换错误堆栈:\n{traceback.format_exc()}")
+                print(f"[ERROR] 堆栈跟踪:\n{traceback.format_exc()}")
                 raise
             
             try:
-                # 从[0, 1]转换回[0, 255]
-                img = img * 255.0
-                print(f"[DEBUG] 转换到[0,255]范围后的值范围: [{img.min()}, {img.max()}], 类型: {img.dtype}")
-            except Exception as e:
-                print(f"[ERROR] 值范围转换失败: {str(e)}")
-                print(f"[ERROR] 错误类型: {type(e)}")
-                import traceback
-                print(f"[ERROR] 值范围转换错误堆栈:\n{traceback.format_exc()}")
-                raise
-            
-            try:
-                # RGB到BGR转换
+                # 从 RGB 转换到 BGR
                 img = img[:, :, ::-1]
-                print(f"[DEBUG] RGB到BGR转换后的形状: {img.shape}, 类型: {img.dtype}")
+                print(f"[DEBUG] RGB到BGR转换后形状: {img.shape}")
             except Exception as e:
-                print(f"[ERROR] RGB到BGR转换失败: {str(e)}")
-                print(f"[ERROR] 错误类型: {type(e)}")
+                print(f"[ERROR] 颜色空间转换失败: {str(e)}")
                 import traceback
-                print(f"[ERROR] RGB到BGR转换错误堆栈:\n{traceback.format_exc()}")
+                print(f"[ERROR] 堆栈跟踪:\n{traceback.format_exc()}")
                 raise
             
             try:
-                # 裁剪到[0, 255]范围并转换为uint8
-                img = np.clip(img, 0, 255)
-                print(f"[DEBUG] 裁剪后的值范围: [{img.min()}, {img.max()}], 类型: {img.dtype}")
-                img = img.astype('uint8')
-                print(f"[DEBUG] 转换为uint8后的值范围: [{img.min()}, {img.max()}], 类型: {img.dtype}")
+                # 转换到 uint8 类型
+                img = (img * 255).round()
+                img = img.astype(np.uint8)
+                print(f"[DEBUG] 最终输出形状: {img.shape}, 类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
             except Exception as e:
-                print(f"[ERROR] 数据类型转换失败: {str(e)}")
-                print(f"[ERROR] 错误类型: {type(e)}")
+                print(f"[ERROR] 类型转换失败: {str(e)}")
                 import traceback
-                print(f"[ERROR] 数据类型转换错误堆栈:\n{traceback.format_exc()}")
-                raise
-            
-            try:
-                # 调整回原始图像大小
-                img = cv2.resize(img, (self.original_width, self.original_height), interpolation=cv2.INTER_LANCZOS4)
-                print(f"[DEBUG] 最终输出形状: {img.shape}, 类型: {img.dtype}")
-            except Exception as e:
-                print(f"[ERROR] 图像大小调整失败: {str(e)}")
-                print(f"[ERROR] 错误类型: {type(e)}")
-                import traceback
-                print(f"[ERROR] 图像大小调整错误堆栈:\n{traceback.format_exc()}")
+                print(f"[ERROR] 堆栈跟踪:\n{traceback.format_exc()}")
                 raise
             
             return img
