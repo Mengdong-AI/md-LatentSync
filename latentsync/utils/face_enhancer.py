@@ -216,7 +216,20 @@ class FaceEnhancer:
             # 确保输入形状正确
             model_input_shape = self.ort_session.get_inputs()[0].shape
             if len(model_input_shape) == 4:  # NCHW格式
-                expected_shape = tuple(d if d > 0 else preprocessed.shape[i] for i, d in enumerate(model_input_shape))
+                # 修复对非数值类型的比较问题
+                expected_shape = []
+                for i, d in enumerate(model_input_shape):
+                    # 检查d是否为数值类型
+                    if isinstance(d, (int, np.integer)):
+                        # 如果是数值且大于0，使用该值；否则使用预处理后图像的相应维度
+                        expected_shape.append(d if d > 0 else preprocessed.shape[i])
+                    else:
+                        # 如果不是数值类型(比如字符串或None)，使用预处理后图像的相应维度
+                        print(f"警告: 模型形状维度 {i} 为非数值类型 ({type(d)}): {d}")
+                        expected_shape.append(preprocessed.shape[i])
+                
+                expected_shape = tuple(expected_shape)
+                
                 if preprocessed.shape != expected_shape:
                     print(f"警告: 输入形状不匹配. 预期 {expected_shape}, 实际 {preprocessed.shape}")
                     # 尝试调整形状以匹配模型预期
