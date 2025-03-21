@@ -812,12 +812,12 @@ class LipsyncPipeline(DiffusionPipeline):
         
         # 使用新的restore_video方法
         synced_video_frames = self.restore_video(
-            face_info=faces_array,
-            original_frames=faces_array,
-            mouth_landmarks_seqs=boxes_array,
-            h=height,
-            w=width,
-            crop_info=affine_matrices_array
+            faces=faces_array,
+            boxes=boxes_array,
+            affine_matrices=affine_matrices_array,
+            source_video_path=video_path,
+            opt_face_enhancer=self.face_enhancer,
+            original_aspect_ratio=True
         )
         # masked_video_frames = self.restore_video(
         #     torch.cat(masked_video_frames), video_frames, boxes, video_path, self.face_enhancer
