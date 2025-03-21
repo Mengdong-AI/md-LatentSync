@@ -83,8 +83,40 @@ class FaceEnhancer:
             print("GFPGAN模型加载成功")
             
         except ImportError:
-            print("无法导入GFPGAN，请安装相应的依赖: pip install gfpgan")
-            raise
+            print("无法导入GFPGAN，尝试备选导入方式...")
+            try:
+                import sys
+                import os
+                # 检查是否有GFPGAN目录，如果有则添加到路径
+                if os.path.exists('GFPGAN'):
+                    sys.path.append('GFPGAN')
+                from gfpgan.gfpgan import GFPGANer
+                
+                # 设定模型路径
+                if self.model_path is None:
+                    self.model_path = 'models/faceenhancer/GFPGANv1.4.pth'
+                    
+                    # 如果模型不存在，打印下载说明
+                    if not os.path.exists(self.model_path):
+                        print(f"GFPGAN模型不存在: {self.model_path}")
+                        print("请从 https://github.com/TencentARC/GFPGAN/releases 下载GFPGANv1.4.pth")
+                        print(f"并将其放置到 {self.model_path}")
+                        raise FileNotFoundError(f"GFPGAN模型不存在: {self.model_path}")
+                
+                # 初始化GFPGAN
+                self.model = GFPGANer(
+                    model_path=self.model_path,
+                    upscale=self.upscale,
+                    arch='clean',
+                    channel_multiplier=2,
+                    bg_upsampler=None,
+                    device=self.device
+                )
+                print("GFPGAN模型加载成功（备选方法）")
+            except Exception as e:
+                print(f"无法导入GFPGAN: {str(e)}")
+                print("请安装相应的依赖: pip install git+https://github.com/TencentARC/GFPGAN.git")
+                raise
     
     def _load_codeformer(self):
         """加载CodeFormer模型"""
@@ -111,8 +143,73 @@ class FaceEnhancer:
             print("CodeFormer模型加载成功")
             
         except ImportError:
-            print("无法导入CodeFormer，请安装相应的依赖")
-            raise
+            print("无法导入CodeFormer，尝试备选导入方式...")
+            try:
+                import sys
+                # 检查是否有CodeFormer目录
+                if os.path.exists('CodeFormer'):
+                    sys.path.append('CodeFormer')
+                    from codeformer.basicsr.archs.codeformer_arch import CodeFormer
+                    from codeformer.basicsr.utils import img2tensor, tensor2img
+                    from codeformer.basicsr.utils.registry import ARCH_REGISTRY
+                    from torchvision.transforms.functional import normalize
+                    
+                    # 创建一个简单的包装类来模拟CodeFormerRestorer
+                    class SimpleCodeFormerRestorer:
+                        def __init__(self, model_path, upscale, device):
+                            self.device = device
+                            self.upscale = upscale
+                            self.model = ARCH_REGISTRY.get('CodeFormer')(
+                                dim_embd=512,
+                                codebook_size=1024,
+                                n_head=8,
+                                n_layers=9,
+                                connect_list=['32', '64', '128', '256']
+                            ).to(device)
+                            
+                            # 加载预训练模型
+                            checkpoint = torch.load(model_path, map_location=device)
+                            self.model.load_state_dict(checkpoint['params_ema'])
+                            self.model.eval()
+                            
+                        def restore(self, img, w=0.5, has_aligned=False, only_center_face=False):
+                            with torch.no_grad():
+                                # 预处理
+                                img_tensor = img2tensor(img, bgr2rgb=False, float32=True)
+                                normalize(img_tensor, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True)
+                                img_tensor = img_tensor.unsqueeze(0).to(self.device)
+                                
+                                # 模型推理
+                                output = self.model(img_tensor, w=w)
+                                
+                                # 后处理
+                                restored_img = tensor2img(output, rgb2bgr=False, min_max=(-1, 1))
+                                return restored_img
+                    
+                    # 设定模型路径
+                    if self.model_path is None:
+                        self.model_path = 'models/faceenhancer/codeformer.pth'
+                        
+                        # 如果模型不存在，打印下载说明
+                        if not os.path.exists(self.model_path):
+                            print(f"CodeFormer模型不存在: {self.model_path}")
+                            print("请从 https://github.com/sczhou/CodeFormer/releases 下载模型")
+                            print(f"并将其放置到 {self.model_path}")
+                            raise FileNotFoundError(f"CodeFormer模型不存在: {self.model_path}")
+                    
+                    # 初始化简单的CodeFormer包装类
+                    self.model = SimpleCodeFormerRestorer(
+                        model_path=self.model_path,
+                        upscale=self.upscale,
+                        device=self.device
+                    )
+                    print("CodeFormer模型加载成功（备选方法）")
+                else:
+                    raise ImportError("CodeFormer目录不存在，请克隆仓库: git clone https://github.com/sczhou/CodeFormer.git")
+            except Exception as e:
+                print(f"无法导入CodeFormer: {str(e)}")
+                print("请安装相应的依赖")
+                raise
     
     def _load_gpen(self):
         """加载GPEN模型"""
@@ -140,8 +237,86 @@ class FaceEnhancer:
             print("GPEN模型加载成功")
             
         except ImportError:
-            print("无法导入GPEN，请安装相应的依赖")
-            raise
+            print("无法导入GPEN，尝试备选导入方式...")
+            try:
+                import sys
+                # 检查是否有GPEN目录
+                if os.path.exists('GPEN'):
+                    sys.path.append('GPEN')
+                    
+                    # 创建一个简单的包装类来模拟GPEN
+                    class SimpleGPEN:
+                        def __init__(self, model_path, size=512, device='cuda'):
+                            self.device = device
+                            self.size = size
+                            self.model_path = model_path
+                            
+                            # 导入需要的模块
+                            from model import FullGenerator
+                            import torch.nn as nn
+                            
+                            # 创建模型
+                            self.model = FullGenerator(512, 512, 8, 2, narrow=1)
+                            
+                            # 加载预训练模型
+                            checkpoint = torch.load(model_path, map_location=device)
+                            self.model.load_state_dict(checkpoint)
+                            self.model.to(device)
+                            self.model.eval()
+                            
+                        def process(self, img):
+                            # 简单的图像预处理
+                            import cv2
+                            import numpy as np
+                            import torch
+                            from torchvision import transforms
+                            
+                            # 调整图像大小
+                            h, w = img.shape[:2]
+                            img = cv2.resize(img, (self.size, self.size))
+                            
+                            # 转换为张量
+                            img_tensor = transforms.ToTensor()(img)
+                            img_tensor = (img_tensor * 2.0 - 1.0).unsqueeze(0).to(self.device)
+                            
+                            # 模型推理
+                            with torch.no_grad():
+                                output = self.model(img_tensor)
+                                
+                            # 转换回OpenCV图像格式
+                            output = output.squeeze(0).permute(1, 2, 0).cpu().numpy()
+                            output = (output * 0.5 + 0.5) * 255
+                            output = output.astype(np.uint8)
+                            
+                            # 调整回原始大小
+                            output = cv2.resize(output, (w, h))
+                            
+                            return output
+                    
+                    # 设定模型路径
+                    if self.model_path is None:
+                        self.model_path = 'models/faceenhancer/GPEN-BFR-512.pth'
+                        
+                        # 如果模型不存在，打印下载说明
+                        if not os.path.exists(self.model_path):
+                            print(f"GPEN模型不存在: {self.model_path}")
+                            print("请从 https://github.com/yangxy/GPEN/releases 下载模型")
+                            print(f"并将其放置到 {self.model_path}")
+                            raise FileNotFoundError(f"GPEN模型不存在: {self.model_path}")
+                    
+                    # 初始化简单的GPEN包装类
+                    self.model = SimpleGPEN(
+                        model_path=self.model_path,
+                        size=512,
+                        device=self.device
+                    )
+                    print("GPEN模型加载成功（备选方法）")
+                else:
+                    raise ImportError("GPEN目录不存在，请克隆仓库: git clone https://github.com/yangxy/GPEN.git")
+            except Exception as e:
+                print(f"无法导入GPEN: {str(e)}")
+                print("请安装相应的依赖")
+                raise
     
     def enhance(self, img: np.ndarray, landmarks: Optional[np.ndarray] = None) -> np.ndarray:
         """

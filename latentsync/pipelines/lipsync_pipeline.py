@@ -265,78 +265,99 @@ class LipsyncPipeline(DiffusionPipeline):
         faces = torch.stack(faces)
         return faces, boxes, affine_matrices
 
-    def restore_video(self, faces: torch.Tensor, video_frames: np.ndarray, boxes: list, affine_matrices: list):
-        """
-        恢复视频帧，只替换面部区域以保持原始视频质量
-        """
-        video_frames = video_frames[: len(faces)]
-        out_frames = []
-        print(f"Restoring {len(faces)} faces with enhanced quality...")
+    def restore_video(self, faces, boxes, affine_matrices, source_video_path, opt_face_enhancer=None, original_aspect_ratio=True):
+        """Restore video with aligned faces.
         
-        for index, face in enumerate(tqdm.tqdm(faces)):
+        Args:
+            faces (np.ndarray): Aligned faces, with shape [T, 1, 3, H, W].
+            boxes (np.ndarray): Face boxes, with shape [T, 1, 4].
+            affine_matrices (np.ndarray): Affine matrices, with shape [T, 1, 2, 3].
+            source_video_path (str): Path to original video.
+            opt_face_enhancer (FaceEnhancer, optional): Face enhancer. Defaults to None.
+            original_aspect_ratio (bool, optional): Whether to keep original aspect ratio. Defaults to True.
+            
+        Returns:
+            np.ndarray: Restored video, with shape [T, H, W, 3].
+        """
+        # Read original video
+        vr = VideoReader(source_video_path)
+        # Get total frame count
+        total_frames = len(vr)
+        
+        # Get original shapes
+        original_frames = vr[:]  # [T, H, W, C]
+        original_h, original_w = original_frames.shape[1:3]
+        
+        # Initialize output frames
+        output_frames = []
+        
+        # Iterate through frames
+        for i in range(min(len(faces), total_frames)):
             try:
-                # 获取原始视频帧 - OpenCV使用BGR格式，而视频是RGB格式
-                original_frame = video_frames[index].copy()
-                
-                # 获取原始帧的尺寸
-                orig_h, orig_w = original_frame.shape[:2]
-                
-                # 将原始帧转换为BGR格式（OpenCV期望的格式）
-                if original_frame.shape[2] == 3:  # 确保是彩色图像
-                    original_frame_bgr = cv2.cvtColor(original_frame, cv2.COLOR_RGB2BGR)
+                # Get current frame
+                if i < len(original_frames):
+                    ori_frame = original_frames[i].copy()  # [H, W, C]
                 else:
-                    original_frame_bgr = original_frame.copy()
+                    # 如果超出原始视频帧数，使用最后一帧
+                    ori_frame = original_frames[-1].copy()
                 
-                # 处理人脸
-                x1, y1, x2, y2 = boxes[index]
-                height = int(y2 - y1)
-                width = int(x2 - x1)
+                # Convert to BGR for OpenCV processing
+                ori_frame_bgr = cv2.cvtColor(ori_frame, cv2.COLOR_RGB2BGR)
                 
-                # 转换面部图像从张量到numpy
-                face = torchvision.transforms.functional.resize(face, size=(height, width), 
-                                                               antialias=True)
-                face = rearrange(face, "c h w -> h w c")
-                face = (face / 2 + 0.5).clamp(0, 1)
-                face = (face * 255).to(torch.uint8).cpu().numpy()
+                # Process face
+                face = faces[i, 0]  # [3, H, W]
+                face = rearrange(face, 'c h w -> h w c')  # [H, W, C]
+                box = boxes[i, 0]  # [4,]
+                affine_matrix = affine_matrices[i, 0]  # [2, 3]
                 
-                # PyTorch/PIL使用RGB，需要转换为BGR以便与OpenCV兼容
+                if face.shape[0] == 0 or box.sum() == 0:
+                    # Skip invalid face
+                    output_frames.append(ori_frame)
+                    continue
+                
+                # Convert face from RGB to BGR (for OpenCV)
                 face_bgr = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
                 
-                # 应用面部增强（如果启用）
-                if self.face_enhancer is not None:
-                    face_bgr = self.face_enhancer.enhance(face_bgr)
-                    print(f"已对帧 {index} 应用面部增强") if index % 10 == 0 else None
+                # Resize face to 512x512 for enhancement if needed
+                if opt_face_enhancer is not None and opt_face_enhancer.enable:
+                    face_enhanced = cv2.resize(face_bgr, (512, 512), interpolation=cv2.INTER_LANCZOS4)
+                    face_enhanced = opt_face_enhancer.enhance(face_enhanced)
+                    face_bgr = cv2.resize(face_enhanced, (face_bgr.shape[1], face_bgr.shape[0]), interpolation=cv2.INTER_LANCZOS4)
                 
-                # 获取处理过的面部和掩码
-                face_region, face_mask = self.image_processor.restorer.restore_img(
-                    original_frame_bgr, face_bgr, affine_matrices[index], return_mask=True)
+                # Compute inverse affine matrix
+                inv_affine_matrix = cv2.invertAffineTransform(affine_matrix)
                 
-                # 检查并修复尺寸不匹配问题
-                mask_h, mask_w = face_mask.shape[:2]
-                if mask_h != orig_h or mask_w != orig_w:
-                    print(f"调整掩码尺寸从 {face_mask.shape} 到 {original_frame_bgr.shape[:2]}")
-                    face_region = cv2.resize(face_region, (orig_w, orig_h), interpolation=cv2.INTER_LANCZOS4)
-                    face_mask = cv2.resize(face_mask, (orig_w, orig_h), interpolation=cv2.INTER_LANCZOS4)
+                # Get frame size to warp back
+                frame_h, frame_w = ori_frame_bgr.shape[:2]
                 
-                # 扩展掩码到3通道
-                face_mask_3d = np.dstack([face_mask, face_mask, face_mask])
-                face_mask_3d = face_mask_3d.clip(0, 1)  # 确保值在0-1范围内
+                # Create mask for face
+                mask = np.ones((face_bgr.shape[0], face_bgr.shape[1], 1), dtype=np.float32)
+                mask = cv2.warpAffine(mask, inv_affine_matrix, (frame_w, frame_h))
+                mask = cv2.GaussianBlur(mask, (31, 31), 10)
                 
-                # 直接混合图像
-                enhanced_frame_bgr = face_region * face_mask_3d + original_frame_bgr * (1 - face_mask_3d)
+                # Warp face back to original position
+                warped_face = cv2.warpAffine(face_bgr, inv_affine_matrix, (frame_w, frame_h))
                 
-                # 将结果转回RGB格式
-                enhanced_frame = cv2.cvtColor(enhanced_frame_bgr.astype(np.uint8), cv2.COLOR_BGR2RGB)
+                # Blend face with original frame
+                warped_face = warped_face.astype(np.float32) / 255.0
+                ori_frame_bgr = ori_frame_bgr.astype(np.float32) / 255.0
                 
-                out_frames.append(enhanced_frame)
+                output_frame = ori_frame_bgr * (1 - mask) + warped_face * mask
+                output_frame = (output_frame * 255.0).astype(np.uint8)
+                
+                # Convert back to RGB
+                output_frame = cv2.cvtColor(output_frame, cv2.COLOR_BGR2RGB)
+                output_frames.append(output_frame)
+            
             except Exception as e:
-                import traceback
-                print(f"警告：处理第 {index} 帧时出错: {str(e)}")
-                print(traceback.format_exc())
-                # 如果处理失败，使用原始帧
-                out_frames.append(video_frames[index])
+                print(f"Error processing frame {i}: {e}")
+                # If error, use original frame
+                output_frames.append(ori_frame)
         
-        return np.stack(out_frames, axis=0)
+        # Stack frames
+        output_frames = np.stack(output_frames, axis=0)
+        
+        return output_frames
 
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
         # If the audio is longer than the video, we need to loop the video
@@ -548,9 +569,27 @@ class LipsyncPipeline(DiffusionPipeline):
             synced_video_frames.append(decoded_latents)
             # masked_video_frames.append(masked_pixel_values)
 
-        synced_video_frames = self.restore_video(torch.cat(synced_video_frames), video_frames, boxes, affine_matrices)
+        # 将PyTorch张量转换为numpy数组以匹配新的restore_video参数格式
+        faces_array = torch.cat(synced_video_frames).cpu().numpy()
+        faces_array = np.expand_dims(faces_array, axis=1)  # [T, 1, C, H, W]
+        
+        boxes_array = np.array(boxes)
+        boxes_array = np.expand_dims(boxes_array, axis=1)  # [T, 1, 4]
+        
+        affine_matrices_array = np.array(affine_matrices)
+        affine_matrices_array = np.expand_dims(affine_matrices_array, axis=1)  # [T, 1, 2, 3]
+        
+        # 使用新的restore_video方法
+        synced_video_frames = self.restore_video(
+            faces=faces_array,
+            boxes=boxes_array,
+            affine_matrices=affine_matrices_array,
+            source_video_path=video_path,
+            opt_face_enhancer=self.face_enhancer,
+            original_aspect_ratio=True
+        )
         # masked_video_frames = self.restore_video(
-        #     torch.cat(masked_video_frames), video_frames, boxes, affine_matrices
+        #     torch.cat(masked_video_frames), video_frames, boxes, video_path, self.face_enhancer
         # )
 
         audio_samples_remain_length = int(synced_video_frames.shape[0] / video_fps * audio_sample_rate)
@@ -601,7 +640,7 @@ class LipsyncPipeline(DiffusionPipeline):
         else:
             # 使用原来的方式处理，写入视频函数会自动处理RGB->BGR转换
             write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=video_fps)
-            sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
-            
-            command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
-            subprocess.run(command, shell=True)
+        sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
+
+        command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
+        subprocess.run(command, shell=True)

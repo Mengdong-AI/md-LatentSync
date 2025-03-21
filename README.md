@@ -275,3 +275,95 @@ LatentSync现在支持三种高级面部增强方法，可以显著提高生成�
 2. CodeFormer和GPEN需要额外安装，请按照安装脚本提示完成安装
 3. 在处理唇形同步视频时，建议保持嘴唇保护功能开启，以确保最佳同步效果
 4. 如果结果视频的嘴唇质量过低，可以尝试调整嘴唇保护强度，在同步准确性和图像质量之间找到平衡
+
+# MD-LatentSync
+
+基于LatentSync的唇形同步系统，增加了高质量视频处理和面部增强功能。
+
+## 新增功能
+
+### 高质量视频处理
+- 保留原始视频质量，只替换面部区域
+- 使用高质量插值方法进行图像处理
+- 支持可配置的面部放大系数
+- 高质量视频编码，支持无损或低损失压缩
+
+### 面部增强功能
+- 集成多种面部增强方法:
+  - GFPGAN: 默认方法，提供良好的面部修复和增强效果
+  - CodeFormer: 适用于更细致的面部细节处理
+  - GPEN: 提供替代的面部增强方案
+  - 基础增强: 包括锐化、直方图均衡化和细节增强等
+- 可调节增强强度
+- 嘴唇区域保护功能，确保唇形同步效果
+
+## 安装
+
+1. 克隆仓库
+```bash
+git clone https://github.com/your-username/md-latentsync.git
+cd md-latentsync
+```
+
+2. 安装依赖
+```bash
+bash install_deps_auto.sh
+```
+或者使用交互式安装:
+```bash
+bash install_deps.sh
+```
+
+## 使用方法
+
+### 命令行使用
+```bash
+python inference.py \
+  --audio_path path/to/audio.wav \
+  --video_path path/to/video.mp4 \
+  --face_upscale_factor 1.2 \
+  --face_enhance True \
+  --face_enhance_method gfpgan \
+  --face_enhance_strength 0.8 \
+  --mouth_protection True \
+  --high_quality True
+```
+
+### 参数说明
+- `--audio_path`: 音频文件路径
+- `--video_path`: 视频文件路径
+- `--face_upscale_factor`: 面部放大系数 (默认: 1.0)
+- `--face_enhance`: 是否启用面部增强 (默认: False)
+- `--face_enhance_method`: 面部增强方法，支持 'gfpgan', 'codeformer', 'gpen', 'sharpen', 'clahe', 'detail', 'combined' (默认: 'gfpgan')
+- `--face_enhance_strength`: 面部增强强度，范围 0.0-1.0 (默认: 0.8)
+- `--mouth_protection`: 是否保护嘴唇区域 (默认: True)
+- `--mouth_protection_strength`: 嘴唇保护强度，范围 0.0-1.0 (默认: 0.8)
+- `--high_quality`: 启用高质量视频输出 (默认: False)
+
+### Gradio界面
+使用交互式界面:
+```bash
+python gradio_app.py
+```
+
+## 高级配置
+对于需要更精细控制的用户，可以编辑配置文件:
+```bash
+vi config/default.yaml
+```
+
+## 注意事项
+- 面部增强模型需要额外的磁盘空间和内存
+- 高质量处理可能增加处理时间
+- 推荐使用CUDA加速
+
+## 引用
+如果您在研究中使用了此项目，请引用原始LatentSync项目:
+```
+@inproceedings{chu2023latentsync,
+  title={LatentSync: Talking Face Generation with Precision using Synchronized Audio-Visual Latent Codes},
+  author={Chu, Zhiming and Wang, Zhenyu and Zhang, Chuyi},
+  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision},
+  year={2023}
+}
+```
