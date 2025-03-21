@@ -514,9 +514,29 @@ class LipsyncPipeline(DiffusionPipeline):
         # 设置面部增强器
         self.face_enhancer = None
         if face_enhance:
+            # 获取当前文件所在目录
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            # 获取项目根目录
+            root_dir = os.path.abspath(os.path.join(current_dir, "../../"))
+            # 构建模型路径（根据方法选择正确的文件名）
+            model_filename = ""
+            if face_enhance_method.lower() == 'gfpgan':
+                model_filename = "GFPGANv1.4.onnx"
+            elif face_enhance_method.lower() == 'codeformer':
+                model_filename = "codeformer.onnx"
+            elif face_enhance_method.lower() == 'gpen':
+                model_filename = "GPEN-BFR-512.onnx"
+            else:
+                model_filename = f"{face_enhance_method}.onnx"
+                
+            model_path = os.path.join(root_dir, f"models/faceenhancer/{model_filename}")
+            
+            print(f"初始化面部增强器 - 方法: {face_enhance_method}, 模型路径: {model_path}")
+            
             self.face_enhancer = FaceEnhancer(
                 enhancement_strength=face_enhance_strength,
                 enhancement_method=face_enhance_method,
+                model_path=model_path,
                 mouth_protection=mouth_protection,
                 mouth_protection_strength=mouth_protection_strength
             )
