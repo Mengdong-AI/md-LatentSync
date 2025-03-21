@@ -4,6 +4,7 @@ import numpy as np
 from typing import Union, Optional, Tuple, List
 import warnings
 import onnxruntime
+import torch
 
 class FaceEnhancer:
     """人脸增强器，支持使用ONNX模型的GPEN，GFPGAN和CodeFormer三种增强方式"""
@@ -63,7 +64,21 @@ class FaceEnhancer:
             # 根据设备选择执行提供程序
             providers = ["CPUExecutionProvider"]
             if str(self.device).lower() == 'cuda':
-                providers = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "DEFAULT"}), "CPUExecutionProvider"]
+                # 检查是否支持 float16
+                is_fp16_supported = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] > 7
+                provider_options = {
+                    "cudnn_conv_algo_search": "DEFAULT",
+                    "gpu_mem_limit": 0,
+                    "arena_extend_strategy": "kNextPowerOfTwo",
+                    "do_copy_in_default_stream": True,
+                }
+                if is_fp16_supported:
+                    provider_options["fp16_enable"] = True
+                
+                providers = [
+                    ("CUDAExecutionProvider", provider_options),
+                    "CPUExecutionProvider"
+                ]
             
             # 创建ONNX会话
             self.session = onnxruntime.InferenceSession(
@@ -82,9 +97,13 @@ class FaceEnhancer:
                 self.resolution = (512, 512)
                 
             print(f"{self.enhancement_method.upper()} ONNX模型加载成功，输入尺寸: {self.resolution}")
+            print(f"使用设备: {self.device}, FP16支持: {is_fp16_supported if str(self.device).lower() == 'cuda' else False}")
             
         except Exception as e:
             print(f"加载ONNX模型失败: {str(e)}")
+            print(f"错误类型: {type(e)}")
+            import traceback
+            print(f"完整错误堆栈:\n{traceback.format_exc()}")
             self.session = None
             self.enable = False
     
@@ -92,13 +111,18 @@ class FaceEnhancer:
         """预处理图像
         
         Args:
-            img: 输入图像，BGR格式，可能是 uint8[0,255] 或 float32[0,1]
+            img: 输入图像，BGR格式，可能是 uint8[0,255] 或 float32/float16[0,1]
             
         Returns:
             预处理后的图像
         """
         try:
             print(f"[DEBUG] 预处理开始，输入图像形状: {img.shape}, 类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
+            
+            # 检查是否支持 float16
+            is_fp16_supported = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] > 7
+            target_dtype = np.float16 if is_fp16_supported else np.float32
+            print(f"[DEBUG] 目标数据类型: {target_dtype}")
             
             # 保存原始图像大小
             self.original_height, self.original_width = img.shape[:2]
@@ -126,14 +150,17 @@ class FaceEnhancer:
                 raise
             
             try:
-                # 确保数据类型是 float32
-                if img_resized.dtype != np.float32:
-                    img_resized = img_resized.astype(np.float32)
-                print(f"[DEBUG] 转换为float32后类型: {img_resized.dtype}")
-                
-                # 如果输入是 uint8 类型，需要归一化到 [0,1]
-                if img.dtype == np.uint8:
-                    img_resized = img_resized / 255.0
+                # 确保数据类型正确
+                if img_resized.dtype != target_dtype:
+                    print(f"[DEBUG] 将数据类型从 {img_resized.dtype} 转换为 {target_dtype}")
+                    if img_resized.dtype == np.uint8:
+                        # 先转换为 float32，再根据需要转换为 float16
+                        img_resized = img_resized.astype(np.float32) / 255.0
+                        if target_dtype == np.float16:
+                            img_resized = img_resized.astype(np.float16)
+                    else:
+                        img_resized = img_resized.astype(target_dtype)
+                print(f"[DEBUG] 转换后类型: {img_resized.dtype}")
                 
                 # BGR到RGB转换
                 img_norm = img_resized[:,:,::-1]
@@ -170,8 +197,10 @@ class FaceEnhancer:
                 raise
             
             try:
-                # 添加批次维度
-                img_batch = np.expand_dims(img_normalized, axis=0).astype(np.float32)
+                # 添加批次维度并确保数据类型正确
+                img_batch = np.expand_dims(img_normalized, axis=0)
+                if img_batch.dtype != target_dtype:
+                    img_batch = img_batch.astype(target_dtype)
                 print(f"[DEBUG] 最终预处理输出形状: {img_batch.shape}, 类型: {img_batch.dtype}")
             except Exception as e:
                 print(f"[ERROR] 添加批次维度失败: {str(e)}")
@@ -278,13 +307,21 @@ class FaceEnhancer:
             img = img.copy()
             print(f"[DEBUG] 输入图像形状: {img.shape}, 类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
             
-            # 确保输入数据类型为 float32
-            if img.dtype != np.float32:
-                print(f"[DEBUG] 将输入数据从 {img.dtype} 转换为 float32")
+            # 检查是否支持 float16
+            is_fp16_supported = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] > 7
+            target_dtype = np.float16 if is_fp16_supported else np.float32
+            print(f"[DEBUG] 目标数据类型: {target_dtype}")
+            
+            # 确保输入数据类型正确
+            if img.dtype != target_dtype:
+                print(f"[DEBUG] 将输入数据从 {img.dtype} 转换为 {target_dtype}")
                 if img.dtype == np.uint8:
+                    # 先转换为 float32，再根据需要转换为 float16
                     img = img.astype(np.float32) / 255.0
+                    if target_dtype == np.float16:
+                        img = img.astype(np.float16)
                 else:
-                    img = img.astype(np.float32)
+                    img = img.astype(target_dtype)
                 print(f"[DEBUG] 转换后数据类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
             
             try:
