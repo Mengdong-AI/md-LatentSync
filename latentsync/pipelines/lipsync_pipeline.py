@@ -368,14 +368,22 @@ class LipsyncPipeline(DiffusionPipeline):
                 
                 # Process face
                 face = faces[i, 0]  # [3, H, W]
+                print(f"[Debug] Frame {i} - Face shape before processing: {face.shape}, dtype: {face.dtype}")
+                print(f"[Debug] Frame {i} - Face value range: min={face.min()}, max={face.max()}")
+                
+                # 首先确保数据类型是float32
+                if face.dtype != np.float32:
+                    face = face.astype(np.float32)
+                
+                # 在rearrange之前进行值域转换
+                face = (face + 1.0) * 0.5  # 从[-1,1]转换到[0,1]
+                face = np.clip(face, 0, 1)
+                face = (face * 255).astype(np.uint8)  # 转换到[0,255]
+                
+                # 然后进行通道重排
                 face = rearrange(face, 'c h w -> h w c')  # [H, W, C]
                 print(f"[Debug] Frame {i} - Face shape after rearrange: {face.shape}, dtype: {face.dtype}")
-                
-                # 将face从[-1,1]转换到[0,1]范围
-                face = (face + 1.0) * 0.5
-                face = np.clip(face, 0, 1)
-                # 转换到[0,255]范围
-                face = (face * 255).astype(np.uint8)
+                print(f"[Debug] Frame {i} - Face value range after processing: min={face.min()}, max={face.max()}")
                 
                 box = boxes[i, 0]  # [4,]
                 affine_matrix = affine_matrices[i, 0]  # [2, 3]
