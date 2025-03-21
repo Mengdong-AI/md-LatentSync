@@ -221,10 +221,10 @@ class FaceEnhancer:
     def _load_gpen(self):
         """加载GPEN模型"""
         try:
-            # 这里简化了GPEN的导入和初始化，实际使用时需要根据GPEN库的API进行调整
-            from gpen.gpen_model import GPEN
+            import sys
+            import os
             
-            # 设定模型路径
+            # 检查模型文件是否存在
             if self.model_path is None:
                 self.model_path = 'models/faceenhancer/GPEN-BFR-512.pth'
                 
@@ -235,19 +235,34 @@ class FaceEnhancer:
                     print(f"并将其放置到 {self.model_path}")
                     raise FileNotFoundError(f"GPEN模型不存在: {self.model_path}")
             
-            # 初始化GPEN
-            self.model = GPEN(
+            # 直接实现简单的 GPEN 处理类
+            class SimpleGPEN:
+                def __init__(self, model_path, size=512, device='cuda'):
+                    self.model_path = model_path
+                    self.size = size
+                    self.device = device
+                    print(f"初始化GPEN模型: {model_path}, 尺寸: {size}, 设备: {device}")
+                    # 在实际使用时才导入依赖模块并加载模型
+                
+                def process(self, img):
+                    """处理图像"""
+                    # 由于没有实际的GPEN模型，这里先返回原图
+                    print(f"注意: GPEN模型尚未实际加载，返回原始图像")
+                    return img
+            
+            # 初始化简单GPEN类
+            self.model = SimpleGPEN(
                 model_path=self.model_path,
-                size=512,  # 根据模型调整
+                size=512,
                 device=self.device
             )
-            print("GPEN模型加载成功")
+            print("GPEN模型准备就绪（简化版）")
+            print("注意：当前实现将返回未增强的原始图像")
             
-        except ImportError:
-            print("无法导入GPEN模块，GPEN增强器不可用")
-            self.enable = False
         except Exception as e:
             print(f"加载GPEN模型失败: {str(e)}")
+            print("GPEN增强器将返回未处理的原始图像")
+            self.model = None
             self.enable = False
     
     def enhance(self, img: np.ndarray, landmarks: Optional[np.ndarray] = None) -> np.ndarray:
@@ -379,9 +394,15 @@ class FaceEnhancer:
     
     def _enhance_with_gpen(self, img: np.ndarray) -> np.ndarray:
         """使用GPEN增强图像"""
+        if self.model is None:
+            return img
+            
         try:
-            # 根据实际的GPEN API调整处理流程
+            # 尝试使用GPEN处理图像
             enhanced_img = self.model.process(img)
+            if enhanced_img is None or enhanced_img.shape != img.shape:
+                print("GPEN处理返回无效图像，返回原始图像")
+                return img
             return enhanced_img
             
         except Exception as e:
