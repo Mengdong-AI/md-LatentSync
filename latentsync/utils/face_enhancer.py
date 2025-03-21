@@ -62,7 +62,7 @@ class FaceEnhancer:
             
             # 根据设备选择执行提供程序
             providers = ["CPUExecutionProvider"]
-            if self.device.lower() == 'cuda':
+            if str(self.device).lower() == 'cuda':
                 providers = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "DEFAULT"}), "CPUExecutionProvider"]
             
             # 创建ONNX会话
