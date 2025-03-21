@@ -283,6 +283,10 @@ class LipsyncPipeline(DiffusionPipeline):
         Returns:
             np.ndarray: Restored video, with shape [T, H, W, 3].
         """
+        # 创建调试目录
+        debug_dir = "debug_frames"
+        os.makedirs(debug_dir, exist_ok=True)
+        
         # Read original video
         vr = VideoReader(source_video_path)
         # Get total frame count
@@ -448,6 +452,10 @@ class LipsyncPipeline(DiffusionPipeline):
                             face_enhanced = opt_face_enhancer.enhance(face_enhanced)
                             print(f"[帧{i}] 增强完成 - 形状: {face_enhanced.shape}, 类型: {face_enhanced.dtype}, 范围: [{np.min(face_enhanced) if face_enhanced.size > 0 else 'N/A'}, {np.max(face_enhanced) if face_enhanced.size > 0 else 'N/A'}]")
                             
+                            # 保存增强后的面部图像用于调试
+                            debug_enhanced_path = os.path.join(debug_dir, f"enhanced_face_{i:04d}.png")
+                            cv2.imwrite(debug_enhanced_path, face_enhanced)
+                            
                             # 调整回原始尺寸
                             face_bgr = cv2.resize(face_enhanced, (face_bgr.shape[1], face_bgr.shape[0]), interpolation=cv2.INTER_LANCZOS4)
                             print(f"[帧{i}] 缩放回原始尺寸后 - 形状: {face_bgr.shape}")
@@ -468,6 +476,10 @@ class LipsyncPipeline(DiffusionPipeline):
                 mask = cv2.warpAffine(mask, inv_affine_matrix, (frame_w, frame_h))
                 mask = cv2.GaussianBlur(mask, (31, 31), 10)
                 
+                # 保存调试用mask图像
+                debug_mask_path = os.path.join(debug_dir, f"face_mask_{i:04d}.png")
+                cv2.imwrite(debug_mask_path, (mask * 255).astype(np.uint8))
+                
                 # 扩展mask从1通道到3通道，以便与RGB图像兼容
                 # 检查mask的维度并进行适当的扩展
                 if len(mask.shape) == 2:
@@ -481,12 +493,27 @@ class LipsyncPipeline(DiffusionPipeline):
                 # Warp face back to original position
                 warped_face = cv2.warpAffine(face_bgr, inv_affine_matrix, (frame_w, frame_h))
                 
+                # 保存仿射变换后的面部用于调试
+                debug_warped_path = os.path.join(debug_dir, f"warped_face_{i:04d}.png")
+                cv2.imwrite(debug_warped_path, warped_face)
+                
                 # 将BGR转换回float32格式，范围0-1
                 warped_face = warped_face.astype(np.float32) / 255.0
                 ori_frame_bgr = ori_frame_bgr.astype(np.float32) / 255.0
                 
+                # 保存混合前的原始帧用于调试
+                debug_orig_path = os.path.join(debug_dir, f"original_frame_{i:04d}.png")
+                cv2.imwrite(debug_orig_path, (ori_frame_bgr * 255).astype(np.uint8))
+                
+                # 检查mixed mask范围，确保它是有效的
+                print(f"[帧{i}] Mask范围: [{np.min(mask_3channel)}, {np.max(mask_3channel)}]")
+                
                 # 混合图像，保持float32格式，使用3通道mask
                 output_frame = ori_frame_bgr * (1 - mask_3channel) + warped_face * mask_3channel
+                
+                # 保存混合后的帧用于调试
+                debug_output_path = os.path.join(debug_dir, f"output_frame_{i:04d}.png")
+                cv2.imwrite(debug_output_path, (output_frame * 255).astype(np.uint8))
                 
                 # 转换为uint8用于输出/存储
                 if output_frame.dtype != np.uint8:
@@ -676,7 +703,7 @@ class LipsyncPipeline(DiffusionPipeline):
             if face_enhance_method.lower() == 'gfpgan':
                 model_filename = "GFPGANv1.4.onnx"
             elif face_enhance_method.lower() == 'codeformer':
-                model_filename = "codeformer.onnx"
+                model_filename = "CodeFormerFixed.onnx"
             elif face_enhance_method.lower() == 'gpen':
                 model_filename = "GPEN-BFR-512.onnx"
             else:
@@ -890,6 +917,10 @@ class LipsyncPipeline(DiffusionPipeline):
             temp_frames_dir = os.path.join(temp_dir, "frames")
             os.makedirs(temp_frames_dir, exist_ok=True)
             
+            # 创建调试目录，保存最终图像
+            final_debug_dir = "final_frames"
+            os.makedirs(final_debug_dir, exist_ok=True)
+            
             print(f"Saving {len(synced_video_frames)} frames...")
             # 先保存所有帧为图像文件
             for i, frame in enumerate(synced_video_frames):
@@ -897,6 +928,10 @@ class LipsyncPipeline(DiffusionPipeline):
                 frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
                 cv2.imwrite(frame_path, frame_bgr)
+                
+                # 同时保存一份到调试目录
+                debug_path = os.path.join(final_debug_dir, f"final_frame_{i:04d}.png")
+                cv2.imwrite(debug_path, frame_bgr)
             
             # 写入音频
             audio_path = os.path.join(temp_dir, "audio.wav")
@@ -914,13 +949,13 @@ class LipsyncPipeline(DiffusionPipeline):
             
             # 添加音频到视频
             ffmpeg_audio_cmd = (f"ffmpeg -y -loglevel error -i {temp_video_no_audio} "
-                              f"-i {audio_path} -c:v copy -c:a aac -b:a 320k -shortest {video_out_path}")
+                              f"-i {audio_path} -c:v copy -c:a aac -b:a 320k -shortest {temp_video_path}")
             print("Adding audio to video...")
             subprocess.run(ffmpeg_audio_cmd, shell=True)
         else:
             # 使用原来的方式处理，写入视频函数会自动处理RGB->BGR转换
             write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=video_fps)
-        sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
+            sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
 
         command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
         subprocess.run(command, shell=True)
