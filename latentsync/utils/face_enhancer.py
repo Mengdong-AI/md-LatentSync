@@ -129,6 +129,10 @@ class FaceEnhancer:
         Returns:
             处理后的BGR图像，范围[0, 255]，uint8类型
         """
+        # 如果输出是float16类型，先转换为float32
+        if img.dtype == np.float16:
+            img = img.astype(np.float32)
+        
         # 如果输出是4D张量(NCHW)，去掉批次维度
         if len(img.shape) == 4:
             img = img[0]
