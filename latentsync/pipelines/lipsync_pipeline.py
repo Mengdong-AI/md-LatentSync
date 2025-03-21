@@ -256,17 +256,119 @@ class LipsyncPipeline(DiffusionPipeline):
         return images
 
     def affine_transform_video(self, video_frames: np.ndarray):
+        """
+        对视频帧进行人脸对齐变换
+        
+        Args:
+            video_frames: 视频帧，形状为 [T, H, W, C]
+            
+        Returns:
+            faces: 对齐后的人脸，形状为 [T, 3, H, W]
+            boxes: 人脸框，形状为 [T, 4]
+            affine_matrices: 仿射变换矩阵，形状为 [T, 2, 3]
+        """
+        # 创建调试目录
+        debug_dir = os.path.join(os.getcwd(), "debug_affine_color")
+        os.makedirs(debug_dir, exist_ok=True)
+        
         faces = []
         boxes = []
         affine_matrices = []
         print(f"Affine transforming {len(video_frames)} faces...")
-        for frame in tqdm.tqdm(video_frames):
+        
+        # 只处理前5帧作为调试样本
+        debug_frames = min(5, len(video_frames))
+        
+        for i, frame in enumerate(tqdm.tqdm(video_frames)):
+            # 保存原始帧用于颜色比较
+            if i < debug_frames:
+                # 检查帧的格式和形状
+                print(f"原始帧 {i} - 形状: {frame.shape}, 类型: {frame.dtype}, 范围: [{np.min(frame)}, {np.max(frame)}]")
+                
+                # 分析原始帧的颜色分布
+                if frame.shape[2] == 3:  # 确保是彩色图像
+                    b_mean, g_mean, r_mean = np.mean(frame[:,:,0]), np.mean(frame[:,:,1]), np.mean(frame[:,:,2])
+                    print(f"原始帧 {i} - 平均BGR值: B={b_mean:.2f}, G={g_mean:.2f}, R={r_mean:.2f}")
+                    
+                    # 推测颜色空间 (BGR vs RGB)
+                    color_space = "BGR" if b_mean > r_mean else "RGB"
+                    print(f"原始帧 {i} - 推测颜色空间: {color_space}")
+                
+                # 保存原始帧
+                original_frame_path = os.path.join(debug_dir, f"original_frame_{i:04d}.png")
+                # 保存为BGR格式以便OpenCV正确显示
+                cv2.imwrite(original_frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if color_space == "RGB" else frame)
+                print(f"已保存原始帧到 {original_frame_path}")
+            
+            # 记录变换前的信息，用于后续比较
+            if i < debug_frames:
+                frame_before = frame.copy()
+            
+            # 执行仿射变换
             face, box, affine_matrix = self.image_processor.affine_transform(frame)
             faces.append(face)
             boxes.append(box)
             affine_matrices.append(affine_matrix)
-
-        faces = torch.stack(faces)
+            
+            # 保存变换后的人脸用于颜色比较
+            if i < debug_frames:
+                # 将张量转换为numpy数组
+                if isinstance(face, torch.Tensor):
+                    face_np = face.permute(1, 2, 0).cpu().numpy() if face.shape[0] == 3 else face.cpu().numpy()
+                else:
+                    face_np = face
+                
+                # 检查变换后人脸的格式和形状
+                print(f"变换后人脸 {i} - 形状: {face_np.shape}, 类型: {face_np.dtype}, 范围: [{np.min(face_np)}, {np.max(face_np)}]")
+                
+                # 分析变换后人脸的颜色分布
+                if len(face_np.shape) == 3 and face_np.shape[2] == 3:  # 确保是彩色图像
+                    b_mean, g_mean, r_mean = np.mean(face_np[:,:,0]), np.mean(face_np[:,:,1]), np.mean(face_np[:,:,2])
+                    print(f"变换后人脸 {i} - 平均BGR值: B={b_mean:.2f}, G={g_mean:.2f}, R={r_mean:.2f}")
+                    
+                    # 推测颜色空间 (BGR vs RGB)
+                    face_color_space = "BGR" if b_mean > r_mean else "RGB"
+                    print(f"变换后人脸 {i} - 推测颜色空间: {face_color_space}")
+                
+                # 保存变换后的人脸
+                face_affine_path = os.path.join(debug_dir, f"face_after_affine_{i:04d}.png")
+                
+                # 确保人脸图像是uint8类型并在0-255范围内
+                if np.max(face_np) <= 1.0:
+                    face_np_save = (face_np * 255).astype(np.uint8)
+                else:
+                    face_np_save = face_np.astype(np.uint8)
+                
+                # 保存为BGR格式以便OpenCV正确显示
+                if face_color_space == "RGB":
+                    face_np_save = cv2.cvtColor(face_np_save, cv2.COLOR_RGB2BGR)
+                
+                cv2.imwrite(face_affine_path, face_np_save)
+                print(f"已保存变换后人脸到 {face_affine_path}")
+                
+                # 提取原始帧中对应的人脸区域，用于颜色比较
+                if box:
+                    # 获取边界框坐标
+                    x1, y1, x2, y2 = box
+                    # 确保坐标在有效范围内
+                    h, w = frame_before.shape[:2]
+                    x1, y1 = max(0, int(x1)), max(0, int(y1))
+                    x2, y2 = min(w, int(x2)), min(h, int(y2))
+                    
+                    # 提取原始帧中的人脸区域
+                    if x2 > x1 and y2 > y1:
+                        orig_face_region = frame_before[y1:y2, x1:x2]
+                        # 保存原始帧中的人脸区域
+                        orig_face_path = os.path.join(debug_dir, f"original_face_region_{i:04d}.png")
+                        cv2.imwrite(orig_face_path, cv2.cvtColor(orig_face_region, cv2.COLOR_RGB2BGR) if color_space == "RGB" else orig_face_region)
+                        print(f"已保存原始帧中的人脸区域到 {orig_face_path}")
+        
+        # 将列表转换为张量或数组
+        faces = torch.stack(faces) if all(isinstance(f, torch.Tensor) for f in faces) else np.array(faces)
+        boxes = np.array(boxes)
+        affine_matrices = np.array(affine_matrices)
+        
+        print(f"仿射变换完成，处理了 {len(video_frames)} 帧")
         return faces, boxes, affine_matrices
 
     def restore_video(self, faces, boxes, affine_matrices, source_video_path, opt_face_enhancer=None, original_aspect_ratio=True):

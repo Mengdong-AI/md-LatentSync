@@ -21,6 +21,7 @@ import numpy as np
 from typing import Union
 from .affine_transform import AlignRestore, laplacianSmooth
 import face_alignment
+import os
 
 """
 If you are enlarging the image, you should prefer to use INTER_LINEAR or INTER_CUBIC interpolation. If you are shrinking the image, you should prefer to use INTER_AREA interpolation.
@@ -118,6 +119,51 @@ class ImageProcessor:
         return pixel_values, masked_pixel_values, mask
 
     def affine_transform(self, image: torch.Tensor, allow_multi_faces: bool = True) -> np.ndarray:
+        """
+        对输入图像进行人脸对齐变换
+        
+        Args:
+            image: 输入图像
+            allow_multi_faces: 是否允许多个人脸
+            
+        Returns:
+            face: 对齐后的人脸，形状为 [3, H, W]
+            box: 人脸框，形状为 [4]
+            affine_matrix: 仿射变换矩阵，形状为 [2, 3]
+        """
+        # 创建调试目录
+        debug_dir = os.path.join(os.getcwd(), "debug_affine_steps")
+        os.makedirs(debug_dir, exist_ok=True)
+        
+        # 生成唯一标识符
+        import datetime
+        import uuid
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        debug_prefix = f"{timestamp}_{unique_id}"
+        
+        # 保存输入图像用于调试
+        input_path = os.path.join(debug_dir, f"{debug_prefix}_01_input.png")
+        input_save = image.copy()
+        
+        # 分析输入图像的颜色分布
+        print(f"===== 调试 affine_transform 过程 [{debug_prefix}] =====")
+        print(f"输入图像 - 形状: {input_save.shape}, 类型: {input_save.dtype}")
+        
+        if len(input_save.shape) == 3 and input_save.shape[2] == 3:  # HWC格式
+            b_mean, g_mean, r_mean = np.mean(input_save[:,:,0]), np.mean(input_save[:,:,1]), np.mean(input_save[:,:,2])
+            print(f"输入图像 - 平均BGR值: B={b_mean:.2f}, G={g_mean:.2f}, R={r_mean:.2f}")
+            input_color_space = "BGR" if b_mean > r_mean else "RGB"
+            print(f"输入图像 - 推测颜色空间: {input_color_space}")
+            
+            # 保存输入图像
+            try:
+                cv2.imwrite(input_path, cv2.cvtColor(input_save, cv2.COLOR_RGB2BGR) if input_color_space == "RGB" else input_save)
+                print(f"已保存输入图像到 {input_path}")
+            except Exception as e:
+                print(f"保存输入图像出错: {e}")
+                
+        # 原始affine_transform代码
         # image = rearrange(image, "c h w-> h w c").numpy()
         if self.fa is None:
             landmark_coordinates = np.array(self.detect_facial_landmarks(image))
@@ -135,14 +181,94 @@ class ImageProcessor:
         lmk3_[0] = points[17:22].mean(0)
         lmk3_[1] = points[22:27].mean(0)
         lmk3_[2] = points[27:36].mean(0)
-        # print(lmk3_)
+        
+        # 保存检测到的关键点
+        landmarks_path = os.path.join(debug_dir, f"{debug_prefix}_02_landmarks.png")
+        try:
+            # 绘制关键点
+            landmarks_vis = input_save.copy()
+            for p in lm68:
+                x, y = int(p[0]), int(p[1])
+                cv2.circle(landmarks_vis, (x, y), 2, (0, 255, 0), -1)
+            
+            # 特别标记用于affine变换的3个关键点
+            for i, p in enumerate(lmk3_):
+                x, y = int(p[0]), int(p[1])
+                cv2.circle(landmarks_vis, (x, y), 5, (0, 0, 255), -1)
+                cv2.putText(landmarks_vis, f"{i}", (x+5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            
+            cv2.imwrite(landmarks_path, cv2.cvtColor(landmarks_vis, cv2.COLOR_RGB2BGR) if input_color_space == "RGB" else landmarks_vis)
+            print(f"已保存关键点图像到 {landmarks_path}")
+        except Exception as e:
+            print(f"保存关键点图像出错: {e}")
+        
+        # 调用align_warp_face前保存图像的副本
+        pre_warp_image = image.copy()
+        
+        # 执行warp_face操作
+        print(f"执行 align_warp_face - 输入图像形状: {image.shape}")
         face, affine_matrix = self.restorer.align_warp_face(
             image.copy(), lmks3=lmk3_, smooth=True, border_mode="constant"
         )
+        
+        # 保存warp后的人脸
+        warped_path = os.path.join(debug_dir, f"{debug_prefix}_03_warped_face.png")
+        try:
+            # 分析warp后的人脸颜色分布
+            print(f"Warp后的人脸 - 形状: {face.shape}, 类型: {face.dtype}")
+            
+            if len(face.shape) == 3 and face.shape[2] == 3:
+                b_mean, g_mean, r_mean = np.mean(face[:,:,0]), np.mean(face[:,:,1]), np.mean(face[:,:,2])
+                print(f"Warp后的人脸 - 平均BGR值: B={b_mean:.2f}, G={g_mean:.2f}, R={r_mean:.2f}")
+                face_color_space = "BGR" if b_mean > r_mean else "RGB"
+                print(f"Warp后的人脸 - 推测颜色空间: {face_color_space}")
+                
+                # 保存为BGR格式以便OpenCV正确显示
+                cv2.imwrite(warped_path, face if face_color_space == "BGR" else cv2.cvtColor(face, cv2.COLOR_RGB2BGR))
+                print(f"已保存warp后的人脸到 {warped_path}")
+        except Exception as e:
+            print(f"保存warp后的人脸出错: {e}")
+            
         box = [0, 0, face.shape[1], face.shape[0]]  # x1, y1, x2, y2
-        face = cv2.resize(face, (self.resolution, self.resolution), interpolation=cv2.INTER_LANCZOS4)
-        face = rearrange(torch.from_numpy(face), "h w c -> c h w")
-        return face, box, affine_matrix
+        
+        # 调整大小前保存
+        before_resize_path = os.path.join(debug_dir, f"{debug_prefix}_04_before_resize.png")
+        try:
+            cv2.imwrite(before_resize_path, face if face_color_space == "BGR" else cv2.cvtColor(face, cv2.COLOR_RGB2BGR))
+            print(f"已保存调整大小前的图像到 {before_resize_path}")
+        except Exception as e:
+            print(f"保存调整大小前的图像出错: {e}")
+        
+        # 执行调整大小操作
+        print(f"执行调整大小 - 输入大小: {face.shape[:2]} -> 目标大小: ({self.resolution}, {self.resolution})")
+        face_resized = cv2.resize(face, (self.resolution, self.resolution), interpolation=cv2.INTER_LANCZOS4)
+        
+        # 保存调整大小后的图像
+        resized_path = os.path.join(debug_dir, f"{debug_prefix}_05_resized.png")
+        try:
+            # 分析调整大小后的图像颜色分布
+            print(f"调整大小后的图像 - 形状: {face_resized.shape}, 类型: {face_resized.dtype}")
+            
+            if len(face_resized.shape) == 3 and face_resized.shape[2] == 3:
+                b_mean, g_mean, r_mean = np.mean(face_resized[:,:,0]), np.mean(face_resized[:,:,1]), np.mean(face_resized[:,:,2])
+                print(f"调整大小后的图像 - 平均BGR值: B={b_mean:.2f}, G={g_mean:.2f}, R={r_mean:.2f}")
+                resized_color_space = "BGR" if b_mean > r_mean else "RGB"
+                print(f"调整大小后的图像 - 推测颜色空间: {resized_color_space}")
+                
+                # 保存为BGR格式以便OpenCV正确显示
+                cv2.imwrite(resized_path, face_resized if resized_color_space == "BGR" else cv2.cvtColor(face_resized, cv2.COLOR_RGB2BGR))
+                print(f"已保存调整大小后的图像到 {resized_path}")
+        except Exception as e:
+            print(f"保存调整大小后的图像出错: {e}")
+            
+        # 执行通道重排操作
+        face_tensor = rearrange(torch.from_numpy(face_resized), "h w c -> c h w")
+        
+        # 保存最终输出的信息
+        print(f"最终输出 - 形状: {face_tensor.shape}, 类型: {face_tensor.dtype}")
+        print(f"===== 结束 affine_transform 调试 [{debug_prefix}] =====")
+        
+        return face_tensor, box, affine_matrix
 
     def preprocess_fixed_mask_image(self, image: torch.Tensor, affine_transform=False):
         if affine_transform:

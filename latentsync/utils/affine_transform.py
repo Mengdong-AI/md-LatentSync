@@ -2,6 +2,9 @@
 
 import numpy as np
 import cv2
+import os
+import datetime
+import uuid
 
 
 def transformation_from_points(points1, points0, smooth=True, p_bias=None):
@@ -51,22 +54,124 @@ class AlignRestore(object):
         return aligned_face, restored_img
 
     def align_warp_face(self, img, lmks3, smooth=True, border_mode="constant"):
+        """
+        对人脸图像进行仿射变换对齐
+        
+        Args:
+            img: 输入图像
+            lmks3: 3个关键点坐标
+            smooth: 是否平滑变换
+            border_mode: 边界模式
+            
+        Returns:
+            cropped_face: 变换后的人脸图像
+            affine_matrix: 仿射变换矩阵
+        """
+        # 创建调试目录
+        debug_dir = os.path.join(os.getcwd(), "debug_warp_steps")
+        os.makedirs(debug_dir, exist_ok=True)
+        
+        # 生成唯一标识符
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        debug_prefix = f"{timestamp}_{unique_id}"
+        
+        # 保存输入图像用于调试
+        input_path = os.path.join(debug_dir, f"{debug_prefix}_01_input.png")
+        input_save = img.copy()
+        
+        # 分析输入图像的颜色分布
+        print(f"===== 调试 align_warp_face 过程 [{debug_prefix}] =====")
+        print(f"输入图像 - 形状: {input_save.shape}, 类型: {input_save.dtype}")
+        
+        if len(input_save.shape) == 3 and input_save.shape[2] == 3:
+            b_mean, g_mean, r_mean = np.mean(input_save[:,:,0]), np.mean(input_save[:,:,1]), np.mean(input_save[:,:,2])
+            print(f"输入图像 - 平均BGR值: B={b_mean:.2f}, G={g_mean:.2f}, R={r_mean:.2f}")
+            input_color_space = "BGR" if b_mean > r_mean else "RGB"
+            print(f"输入图像 - 推测颜色空间: {input_color_space}")
+            
+            # 保存输入图像
+            cv2.imwrite(input_path, cv2.cvtColor(input_save, cv2.COLOR_RGB2BGR) if input_color_space == "RGB" else input_save)
+            print(f"已保存输入图像到 {input_path}")
+            
+            # 可视化关键点
+            landmarks_img = input_save.copy()
+            for i, point in enumerate(lmks3):
+                x, y = int(point[0]), int(point[1])
+                cv2.circle(landmarks_img, (x, y), 5, (0, 0, 255), -1)
+                cv2.putText(landmarks_img, f"{i}", (x+5, y), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                
+            # 保存带关键点的图像
+            landmarks_path = os.path.join(debug_dir, f"{debug_prefix}_02_landmarks.png")
+            cv2.imwrite(landmarks_path, cv2.cvtColor(landmarks_img, cv2.COLOR_RGB2BGR) if input_color_space == "RGB" else landmarks_img)
+            print(f"已保存带关键点的图像到 {landmarks_path}")
+            
+            # 可视化模板关键点
+            template_img = np.zeros((self.face_size[1], self.face_size[0], 3), dtype=np.uint8)
+            for i, point in enumerate(self.face_template):
+                x, y = int(point[0]), int(point[1])
+                cv2.circle(template_img, (x, y), 5, (0, 255, 0), -1)
+                cv2.putText(template_img, f"{i}", (x+5, y), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                
+            # 保存模板关键点图像
+            template_path = os.path.join(debug_dir, f"{debug_prefix}_03_template.png")
+            cv2.imwrite(template_path, template_img)
+            print(f"已保存模板关键点图像到 {template_path}")
+        
+        # 计算仿射变换矩阵
+        print(f"计算仿射变换矩阵 - 关键点: {lmks3}, 目标模板: {self.face_template}")
         affine_matrix, self.p_bias = transformation_from_points(lmks3, self.face_template, smooth, self.p_bias)
+        print(f"计算得到的仿射变换矩阵: \n{affine_matrix}")
+        
+        # 设置边界模式
         if border_mode == "constant":
-            border_mode = cv2.BORDER_CONSTANT
+            border_mode_cv = cv2.BORDER_CONSTANT
+            print(f"边界模式: BORDER_CONSTANT, 边界值: [127, 127, 127]")
         elif border_mode == "reflect101":
-            border_mode = cv2.BORDER_REFLECT101
+            border_mode_cv = cv2.BORDER_REFLECT101
+            print(f"边界模式: BORDER_REFLECT101")
         elif border_mode == "reflect":
-            border_mode = cv2.BORDER_REFLECT
+            border_mode_cv = cv2.BORDER_REFLECT
+            print(f"边界模式: BORDER_REFLECT")
+        else:
+            border_mode_cv = cv2.BORDER_CONSTANT
+            print(f"未知边界模式: {border_mode}, 使用默认值: BORDER_CONSTANT")
 
+        # 执行仿射变换
+        print(f"执行仿射变换 - 输入大小: {img.shape[:2]}, 目标大小: {self.face_size}")
         cropped_face = cv2.warpAffine(
             img,
             affine_matrix,
             self.face_size,
             flags=cv2.INTER_LANCZOS4,
-            borderMode=border_mode,
+            borderMode=border_mode_cv,
             borderValue=[127, 127, 127],
         )
+        
+        # 保存变换后的图像
+        output_path = os.path.join(debug_dir, f"{debug_prefix}_04_warped.png")
+        
+        # 分析输出图像的颜色分布
+        print(f"输出图像 - 形状: {cropped_face.shape}, 类型: {cropped_face.dtype}")
+        
+        if len(cropped_face.shape) == 3 and cropped_face.shape[2] == 3:
+            b_mean, g_mean, r_mean = np.mean(cropped_face[:,:,0]), np.mean(cropped_face[:,:,1]), np.mean(cropped_face[:,:,2])
+            print(f"输出图像 - 平均BGR值: B={b_mean:.2f}, G={g_mean:.2f}, R={r_mean:.2f}")
+            output_color_space = "BGR" if b_mean > r_mean else "RGB"
+            print(f"输出图像 - 推测颜色空间: {output_color_space}")
+            
+            # 检查颜色空间是否发生变化
+            if input_color_space != output_color_space:
+                print(f"警告: 颜色空间发生变化! 输入: {input_color_space} -> 输出: {output_color_space}")
+            else:
+                print(f"颜色空间保持一致: {input_color_space}")
+            
+            # 保存输出图像
+            cv2.imwrite(output_path, cv2.cvtColor(cropped_face, cv2.COLOR_RGB2BGR) if output_color_space == "RGB" else cropped_face)
+            print(f"已保存变换后的图像到 {output_path}")
+        
+        print(f"===== 结束 align_warp_face 调试 [{debug_prefix}] =====")
+        
         return cropped_face, affine_matrix
 
     def align_warp_face2(self, img, landmark, border_mode="constant"):
