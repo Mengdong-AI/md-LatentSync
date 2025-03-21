@@ -315,12 +315,31 @@ class FaceEnhancer:
                         if original_img.dtype != np.uint8:
                             original_for_blend = original_img.clip(0, 255).astype(np.uint8)
                     
-                    # 混合原图与增强结果
-                    result = cv2.addWeighted(
-                        output_rgb, self.enhancement_strength,
-                        original_for_blend, 1.0 - self.enhancement_strength,
-                        0
-                    )
+                    # 确保两个数组类型完全一致
+                    print(f"混合前类型检查 - 增强图像: {output_rgb.dtype}, 原图: {original_for_blend.dtype}")
+                    
+                    # 强制转换为相同类型
+                    if output_rgb.dtype != original_for_blend.dtype:
+                        if original_for_blend.dtype == np.uint8:
+                            output_rgb = output_rgb.astype(np.uint8)
+                        else:
+                            original_for_blend = original_for_blend.astype(output_rgb.dtype)
+                    
+                    print(f"混合后类型检查 - 增强图像: {output_rgb.dtype}, 原图: {original_for_blend.dtype}")
+                    
+                    # 混合原图与增强结果，明确指定输出类型
+                    if output_rgb.dtype == np.uint8:
+                        result = cv2.addWeighted(
+                            output_rgb, self.enhancement_strength,
+                            original_for_blend, 1.0 - self.enhancement_strength,
+                            0, dtype=cv2.CV_8U
+                        )
+                    else:
+                        result = cv2.addWeighted(
+                            output_rgb, self.enhancement_strength,
+                            original_for_blend, 1.0 - self.enhancement_strength,
+                            0, dtype=cv2.CV_32F
+                        )
                     
                     # 保存最终结果
                     try:
