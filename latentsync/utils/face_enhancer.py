@@ -159,8 +159,11 @@ class FaceEnhancer:
                         if target_dtype == np.float16:
                             img_resized = img_resized.astype(np.float16)
                     else:
+                        # 如果已经是浮点类型，确保值范围在 [0, 1]
+                        if img_resized.max() > 1.0:
+                            img_resized = img_resized / 255.0
                         img_resized = img_resized.astype(target_dtype)
-                print(f"[DEBUG] 转换后类型: {img_resized.dtype}")
+                print(f"[DEBUG] 转换后类型: {img_resized.dtype}, 值范围: [{img_resized.min()}, {img_resized.max()}]")
                 
                 # BGR到RGB转换
                 img_norm = img_resized[:,:,::-1]
@@ -239,7 +242,7 @@ class FaceEnhancer:
                 # 从 NCHW 转换为 HWC
                 img = np.squeeze(img)  # 移除批次维度
                 img = img.transpose(1, 2, 0)  # CHW -> HWC
-                print(f"[DEBUG] 转置后形状: {img.shape}, 类型: {img.dtype}")
+                print(f"[DEBUG] 转置后形状: {img.shape}, 类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
             except Exception as e:
                 print(f"[ERROR] 转置操作失败: {str(e)}")
                 import traceback
@@ -260,7 +263,7 @@ class FaceEnhancer:
             try:
                 # 从 RGB 转换到 BGR
                 img = img[:, :, ::-1]
-                print(f"[DEBUG] RGB到BGR转换后形状: {img.shape}")
+                print(f"[DEBUG] RGB到BGR转换后形状: {img.shape}, 类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
             except Exception as e:
                 print(f"[ERROR] 颜色空间转换失败: {str(e)}")
                 import traceback
@@ -269,7 +272,7 @@ class FaceEnhancer:
             
             try:
                 # 转换到 uint8 类型
-                img = (img * 255).round()
+                img = np.clip(img * 255, 0, 255).round()
                 img = img.astype(np.uint8)
                 print(f"[DEBUG] 最终输出形状: {img.shape}, 类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
             except Exception as e:
@@ -306,23 +309,6 @@ class FaceEnhancer:
             # 拷贝图像以避免修改原图
             img = img.copy()
             print(f"[DEBUG] 输入图像形状: {img.shape}, 类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
-            
-            # 检查是否支持 float16
-            is_fp16_supported = torch.cuda.is_available() and torch.cuda.get_device_capability()[0] > 7
-            target_dtype = np.float16 if is_fp16_supported else np.float32
-            print(f"[DEBUG] 目标数据类型: {target_dtype}")
-            
-            # 确保输入数据类型正确
-            if img.dtype != target_dtype:
-                print(f"[DEBUG] 将输入数据从 {img.dtype} 转换为 {target_dtype}")
-                if img.dtype == np.uint8:
-                    # 先转换为 float32，再根据需要转换为 float16
-                    img = img.astype(np.float32) / 255.0
-                    if target_dtype == np.float16:
-                        img = img.astype(np.float16)
-                else:
-                    img = img.astype(target_dtype)
-                print(f"[DEBUG] 转换后数据类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
             
             try:
                 # 预处理图像

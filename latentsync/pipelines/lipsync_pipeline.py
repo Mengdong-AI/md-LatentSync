@@ -365,12 +365,21 @@ class LipsyncPipeline(DiffusionPipeline):
                 # Resize face to 512x512 for enhancement if needed
                 if opt_face_enhancer is not None and opt_face_enhancer.enable:
                     try:
+                        # 保存原始尺寸
+                        original_h, original_w = face_bgr.shape[:2]
+                        # 先将图像转换为 float32 类型，范围 [0, 1]
+                        face_bgr = face_bgr.astype(np.float32) / 255.0
+                        # 调整大小
                         face_enhanced = cv2.resize(face_bgr, (512, 512), interpolation=cv2.INTER_LANCZOS4)
                         print(f"[DEBUG] 调整大小后的人脸形状: {face_enhanced.shape}, 类型: {face_enhanced.dtype}")
+                        # 增强
                         face_enhanced = opt_face_enhancer.enhance(face_enhanced)
                         print(f"[DEBUG] 增强后的人脸形状: {face_enhanced.shape}, 类型: {face_enhanced.dtype}")
-                        face_bgr = cv2.resize(face_enhanced, (face_bgr.shape[1], face_bgr.shape[0]), interpolation=cv2.INTER_LANCZOS4)
+                        # 调整回原始大小
+                        face_bgr = cv2.resize(face_enhanced, (original_w, original_h), interpolation=cv2.INTER_LANCZOS4)
                         print(f"[DEBUG] 最终调整大小后的人脸形状: {face_bgr.shape}, 类型: {face_bgr.dtype}")
+                        # 转换回 uint8 类型
+                        face_bgr = (face_bgr * 255).clip(0, 255).astype(np.uint8)
                     except Exception as e:
                         print(f"[ERROR] 人脸增强过程出错: {str(e)}")
                         print(f"[ERROR] 错误类型: {type(e)}")
