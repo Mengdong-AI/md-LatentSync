@@ -166,27 +166,45 @@ class FaceEnhancer:
                 print("警告: 图像包含无效数据")
                 img = np.nan_to_num(img, nan=0, posinf=1, neginf=0)
                 
-            # GPEN预处理 (更简洁的实现)
+            # GPEN预处理 
             if self.enhancement_method == 'gpen':
+                # 检查输入图像格式和类型
+                print(f"GPEN输入图像: 形状={img.shape}, 类型={img.dtype}, 值范围=[{np.min(img)}, {np.max(img)}]")
+                
                 # 确保图像为uint8类型
                 if np.max(img) <= 1.0:
                     img = (img * 255).astype(np.uint8)
                 else:
                     img = img.astype(np.uint8)
                 
-                # 调整大小到模型分辨率
-                img_resized = cv2.resize(img, self.resolution, interpolation=cv2.INTER_LINEAR)
+                # 保存调整前的图像用于调试
+                cv2.imwrite(os.path.join(debug_dir, "before_resize.png"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
                 
-                # 明确使用cvtColor将RGB转BGR而非手动交换通道
+                # 保持宽高比调整大小到模型分辨率
+                h, w = img.shape[:2]
+                scale = min(self.resolution[0]/h, self.resolution[1]/w)
+                new_size = (int(w*scale), int(h*scale))
+                
+                img_resized = cv2.resize(img, new_size, interpolation=cv2.INTER_LANCZOS4)
+                
+                # 创建新画布并放入调整大小后的图像
+                canvas = np.zeros((self.resolution[0], self.resolution[1], 3), dtype=np.uint8)
+                y_offset = (self.resolution[0] - new_size[1]) // 2
+                x_offset = (self.resolution[1] - new_size[0]) // 2
+                
+                canvas[y_offset:y_offset+new_size[1], x_offset:x_offset+new_size[0]] = img_resized
+                img_resized = canvas
+                
+                # 保存调整后的图像用于调试
+                cv2.imwrite(os.path.join(debug_dir, "after_resize.png"), cv2.cvtColor(img_resized, cv2.COLOR_RGB2BGR))
+                
+                # 从RGB转换为BGR (GPEN模型需要BGR输入)
                 img_bgr = cv2.cvtColor(img_resized, cv2.COLOR_RGB2BGR).astype(np.float32) / 255.0
                 
                 # 保存预处理后图像用于调试
-                try:
-                    preproc_path = os.path.join(debug_dir, "preprocessed.png")
-                    preproc_vis = (img_bgr * 255).astype(np.uint8) 
-                    cv2.imwrite(preproc_path, preproc_vis)  # 已经是BGR格式，不需要转换
-                except Exception as e:
-                    print(f"保存预处理图像出错: {str(e)}")
+                preproc_path = os.path.join(debug_dir, "preprocessed.png")
+                preproc_vis = (img_bgr * 255).astype(np.uint8)
+                cv2.imwrite(preproc_path, preproc_vis)
                 
                 # 转换为CHW格式
                 img_chw = img_bgr.transpose((2, 0, 1))
@@ -201,12 +219,12 @@ class FaceEnhancer:
                 try:
                     gpen_input_path = os.path.join(debug_dir, "gpen_input.png")
                     gpen_input_vis = ((img_norm.transpose(1, 2, 0) + 1) / 2 * 255).astype(np.uint8)
-                    cv2.imwrite(gpen_input_path, gpen_input_vis)  # 已经是BGR格式
+                    cv2.imwrite(gpen_input_path, gpen_input_vis)
                 except Exception as e:
                     print(f"保存GPEN输入出错: {str(e)}")
                 
                 print(f"GPEN预处理完成，输入形状: {img_batch.shape}, 输入值范围: [{np.min(img_batch)}, {np.max(img_batch)}]")
-                return img_batch
+                return img_batch, x_offset, y_offset, new_size
                 
             # 其他方法的预处理保持不变...
             # ...此处省略其他方法的预处理代码...
@@ -255,14 +273,22 @@ class FaceEnhancer:
                 
             # 保存原始图像尺寸
             orig_h, orig_w = img.shape[:2]
-            
-            # 预处理图像
-            preprocessed = self.preprocess(img, face_landmarks)
-            if preprocessed is None:
-                print("预处理失败，返回原始图像")
-                return original_img
                 
-            # 执行推理 (GPEN简化实现)
+            # 预处理图像
+            if self.enhancement_method == 'gpen':
+                preprocessed_data = self.preprocess(img, face_landmarks)
+                if preprocessed_data is None:
+                    print("预处理失败，返回原始图像")
+                    return original_img
+                    
+                preprocessed, x_offset, y_offset, new_size = preprocessed_data
+            else:
+                preprocessed = self.preprocess(img, face_landmarks)
+                if preprocessed is None:
+                    print("预处理失败，返回原始图像")
+                    return original_img
+                
+            # 执行推理 (GPEN实现)
             if self.enhancement_method == 'gpen':
                 try:
                     print("执行GPEN推理...")
@@ -275,35 +301,34 @@ class FaceEnhancer:
                     if not outputs or len(outputs) == 0:
                         print("GPEN模型未产生输出")
                         return original_img
-                        
+                
                     # 获取第一个输出
                     output = outputs[0][0]
                     print(f"GPEN输出: 形状={output.shape}, 类型={output.dtype}, 值范围=[{np.min(output)}, {np.max(output)}]")
                     
                     # 保存原始模型输出
                     try:
-                        transposed_output_path = os.path.join(debug_dir, "transposed_output.png")
-                        transposed = output.transpose(1, 2, 0)
-                        transposed_vis = ((transposed.clip(-1, 1) + 1) / 2 * 255).astype(np.uint8)
-                        cv2.imwrite(transposed_output_path, transposed_vis)  # 保持原始通道顺序
-                    except Exception as e:
-                        print(f"保存原始转置输出出错: {str(e)}")
-                    
-                    # 后处理
-                    # 从[-1,1]转回[0,1]
-                    output_norm = (output.transpose(1, 2, 0).clip(-1, 1) + 1) / 2
-                    
-                    # 将输出转为RGB格式
-                    # 注意：GPEN模型输出是BGR格式，需要转换为RGB
-                    output_bgr = (output_norm * 255).clip(0, 255).astype(np.uint8)
-                    output_rgb = cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB)
-                    
-                    # 保存原始BGR输出
-                    try:
                         raw_output_path = os.path.join(debug_dir, "raw_model_output.png")
-                        cv2.imwrite(raw_output_path, output_bgr)  # 直接保存BGR格式
+                        output_vis = ((output.clip(-1, 1) + 1) / 2 * 255).astype(np.uint8)
+                        if output.shape[0] == 3:  # CHW格式
+                            output_vis = output_vis.transpose(1, 2, 0)
+                        cv2.imwrite(raw_output_path, output_vis)
                     except Exception as e:
                         print(f"保存原始输出出错: {str(e)}")
+                    
+                    # 后处理
+                    # 检查输出格式
+                    if output.shape[0] == 3:  # CHW格式
+                        print("输出是CHW格式，转换为HWC")
+                        # 从[-1,1]转回[0,1]
+                        output_norm = (output.transpose(1, 2, 0).clip(-1, 1) + 1) / 2
+                    else:  # 已经是HWC格式
+                        print("输出已经是HWC格式")
+                        output_norm = (output.clip(-1, 1) + 1) / 2
+                    
+                    # 将输出转为BGR格式，再转回RGB
+                    output_bgr = (output_norm * 255).clip(0, 255).astype(np.uint8)
+                    output_rgb = cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB)
                     
                     # 保存转换后的RGB输出
                     try:
@@ -312,22 +337,21 @@ class FaceEnhancer:
                     except Exception as e:
                         print(f"保存RGB输出出错: {str(e)}")
                     
-                    # 调整大小以匹配输入，保持宽高比
+                    # 裁剪回原始区域
+                    if new_size[0] < self.resolution[1] or new_size[1] < self.resolution[0]:
+                        print(f"裁剪输出 - 原始尺寸: {new_size}, 裁剪区域: x={x_offset}, y={y_offset}")
+                        output_rgb = output_rgb[y_offset:y_offset+new_size[1], x_offset:x_offset+new_size[0]]
+                    
+                    # 保存裁剪后的输出
+                    try:
+                        clipped_output_path = os.path.join(debug_dir, "clipped_output.png")
+                        cv2.imwrite(clipped_output_path, cv2.cvtColor(output_rgb, cv2.COLOR_RGB2BGR))
+                    except Exception as e:
+                        print(f"保存裁剪后输出出错: {str(e)}")
+                    
+                    # 调整大小以匹配输入
                     if (output_rgb.shape[0] != orig_h or output_rgb.shape[1] != orig_w):
-                        # 计算保持宽高比的缩放比例
-                        scale = min(orig_h/output_rgb.shape[0], orig_w/output_rgb.shape[1])
-                        new_size = (int(output_rgb.shape[1] * scale), int(output_rgb.shape[0] * scale))
-                        print(f"调整输出大小，保持宽高比: 原始={output_rgb.shape[:2]}, 新尺寸={new_size}")
-                        
-                        output_rgb_resized = cv2.resize(output_rgb, new_size, interpolation=cv2.INTER_LANCZOS4)
-                        
-                        # 创建画布并居中放置调整大小后的图像
-                        output_canvas = np.zeros((orig_h, orig_w, 3), dtype=output_rgb.dtype)
-                        y_offset = (orig_h - output_rgb_resized.shape[0]) // 2
-                        x_offset = (orig_w - output_rgb_resized.shape[1]) // 2
-                        output_canvas[y_offset:y_offset+output_rgb_resized.shape[0], 
-                                    x_offset:x_offset+output_rgb_resized.shape[1]] = output_rgb_resized
-                        output_rgb = output_canvas
+                        output_rgb = cv2.resize(output_rgb, (orig_w, orig_h), interpolation=cv2.INTER_LANCZOS4)
                     
                     # 保存调整大小后的输出
                     try:
@@ -382,6 +406,16 @@ class FaceEnhancer:
                     except Exception as e:
                         print(f"保存最终结果出错: {str(e)}")
                     
+                    # 保存混合结果
+                    try:
+                        blended_path = os.path.join(debug_dir, "blended_result.png")
+                        blended_vis = result
+                        if np.max(result) <= 1.0:
+                            blended_vis = (result * 255).clip(0, 255).astype(np.uint8)
+                        cv2.imwrite(blended_path, cv2.cvtColor(blended_vis, cv2.COLOR_RGB2BGR))
+                    except Exception as e:
+                        print(f"保存混合结果出错: {str(e)}")
+                    
                     # 应用嘴部保护如果需要
                     if self.mouth_protection and face_landmarks is not None:
                         # ...此处省略嘴部保护代码...
@@ -389,7 +423,6 @@ class FaceEnhancer:
                     
                     print("GPEN增强完成")
                     return result
-                    
                 except Exception as e:
                     print(f"GPEN推理时出错: {str(e)}")
                     traceback.print_exc()
@@ -397,7 +430,6 @@ class FaceEnhancer:
             
             # 其他增强方法保持不变...
             # ...此处省略其他增强方法代码...
-            
             return original_img
             
         except Exception as e:

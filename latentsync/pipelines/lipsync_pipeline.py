@@ -397,11 +397,6 @@ class LipsyncPipeline(DiffusionPipeline):
                 debug_ori_orig_path = os.path.join(debug_dir, f"before_convert_frame_{i:04d}.png")
                 cv2.imwrite(debug_ori_orig_path, cv2.cvtColor(ori_frame, cv2.COLOR_RGB2BGR))
                 
-                # 确保原始帧是RGB格式（pipeline中处理视频都是使用RGB格式）
-                # 检查原始帧的颜色通道排序（基于域知识，视频通常是RGB格式）
-                # Convert to BGR for OpenCV processing
-                ori_frame_bgr = cv2.cvtColor(ori_frame, cv2.COLOR_RGB2BGR)
-                
                 # Process face
                 face = faces[i, 0]  # [3, H, W]
                 face = rearrange(face, 'c h w -> h w c')  # [H, W, C]
@@ -418,7 +413,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 face_debug = (face * 255.0).clip(0, 255).astype(np.uint8) if np.max(face) <= 1.0 else face.clip(0, 255).astype(np.uint8)
                 cv2.imwrite(face_debug_path, cv2.cvtColor(face_debug, cv2.COLOR_RGB2BGR))
                 
-                # 检查face的数据类型，确保兼容cv2.cvtColor
+                # 检查face的数据类型，确保数据类型一致性
                 if face.dtype != np.float32:
                     print(f"[帧{i}] 警告: 面部图像数据类型不是float32，而是{face.dtype}，进行转换")
                     # 如果是uint8类型，归一化到0-1范围
@@ -441,80 +436,71 @@ class LipsyncPipeline(DiffusionPipeline):
                 # 裁剪确保值在0-1范围内
                 face = np.clip(face, 0, 1)
                 
-                # 临时转换为uint8用于OpenCV处理
-                face_for_cv = (face * 255.0).astype(np.uint8)
-                
-                # 确认人脸是RGB格式，转换为BGR用于OpenCV处理
-                face_bgr = cv2.cvtColor(face_for_cv, cv2.COLOR_RGB2BGR)
-                
-                # 保存转换后的人脸用于调试
-                face_bgr_debug_path = os.path.join(debug_dir, f"face_bgr_{i:04d}.png")
-                cv2.imwrite(face_bgr_debug_path, face_bgr)
+                # 保存处理后的人脸用于调试
+                face_converted_path = os.path.join(debug_dir, f"face_converted_{i:04d}.png")
+                cv2.imwrite(face_converted_path, cv2.cvtColor((face*255).astype(np.uint8), cv2.COLOR_RGB2BGR))
                 
                 # Resize face to 512x512 for enhancement if needed
                 if opt_face_enhancer is not None and opt_face_enhancer.enhancement_method:
                     try:
-                        print(f"[帧{i}] 开始增强面部，原始尺寸: {face_bgr.shape}")
+                        print(f"[帧{i}] 开始增强面部，原始尺寸: {face.shape}")
                         
-                        # 保持宽高比进行缩放到512x512
-                        face_h, face_w = face_bgr.shape[:2]
+                        # 直接传递RGB格式的图像给增强器，让增强器内部处理颜色转换
+                        # 确保图像是RGB格式，因为face_enhancer的enhance方法期望RGB输入
+                        face_rgb = face
                         
-                        # 计算保持宽高比的缩放比例
-                        scale = min(512/face_h, 512/face_w)
-                        new_size = (int(face_w * scale), int(face_h * scale))
+                        # 保存传递给增强器的图像用于调试
+                        face_for_enhancer_path = os.path.join(debug_dir, f"face_for_enhancer_{i:04d}.png")
+                        cv2.imwrite(face_for_enhancer_path, cv2.cvtColor((face_rgb*255).astype(np.uint8), cv2.COLOR_RGB2BGR))
                         
-                        # 缩放图像
-                        face_resized = cv2.resize(face_bgr, new_size, interpolation=cv2.INTER_LANCZOS4)
+                        # 调用面部增强，直接传入RGB格式图像
+                        face_enhanced = opt_face_enhancer.enhance(face_rgb)
+                        print(f"[帧{i}] 增强完成 - 形状: {face_enhanced.shape}, 类型: {face_enhanced.dtype}, 范围: [{np.min(face_enhanced) if face_enhanced.size > 0 else 'N/A'}, {np.max(face_enhanced) if face_enhanced.size > 0 else 'N/A'}]")
                         
-                        # 创建512x512的画布并居中放置
-                        face_canvas = np.zeros((512, 512, 3), dtype=face_bgr.dtype)
-                        y_offset = (512 - face_resized.shape[0]) // 2
-                        x_offset = (512 - face_resized.shape[1]) // 2
-                        face_canvas[y_offset:y_offset+face_resized.shape[0], 
-                                    x_offset:x_offset+face_resized.shape[1]] = face_resized
+                        # 保存增强后的面部图像用于调试
+                        debug_enhanced_path = os.path.join(debug_dir, f"enhanced_face_{i:04d}.png")
+                        enhanced_debug = face_enhanced
+                        if np.max(enhanced_debug) <= 1.0:
+                            enhanced_debug = (enhanced_debug * 255).clip(0, 255).astype(np.uint8)
+                        cv2.imwrite(debug_enhanced_path, cv2.cvtColor(enhanced_debug, cv2.COLOR_RGB2BGR))
                         
-                        face_enhanced = face_canvas
-                        print(f"[帧{i}] 缩放到512x512后 - 形状: {face_enhanced.shape}, 类型: {face_enhanced.dtype}, 范围: [{np.min(face_enhanced) if face_enhanced.size > 0 else 'N/A'}, {np.max(face_enhanced) if face_enhanced.size > 0 else 'N/A'}]")
+                        # 确保增强后的图像与原始图像尺寸匹配
+                        if face_enhanced.shape[:2] != face.shape[:2]:
+                            print(f"[帧{i}] 调整增强后图像大小以匹配原始尺寸: {face.shape[:2]}")
+                            face_enhanced = cv2.resize(face_enhanced, (face.shape[1], face.shape[0]), interpolation=cv2.INTER_LANCZOS4)
                         
-                        # 保存调整后的面部图像用于调试
-                        debug_resized_path = os.path.join(debug_dir, f"face_resized_{i:04d}.png")
-                        cv2.imwrite(debug_resized_path, face_enhanced)
+                        # 确保数据类型一致
+                        if face.dtype != face_enhanced.dtype:
+                            print(f"[帧{i}] 调整增强后图像类型以匹配原始类型: {face.dtype}")
+                            if np.max(face) <= 1.0 and np.max(face_enhanced) > 1.0:
+                                face_enhanced = face_enhanced / 255.0
+                            elif np.max(face) > 1.0 and np.max(face_enhanced) <= 1.0:
+                                face_enhanced = face_enhanced * 255.0
+                            face_enhanced = face_enhanced.astype(face.dtype)
                         
-                        # 检查面部图像是否有效
-                        if face_enhanced.size == 0 or np.all(face_enhanced == 0):
-                            print(f"[帧{i}] 警告: 面部图像全为零或大小为0")
-                            face_bgr = cv2.resize(face_bgr, (face_bgr.shape[1], face_bgr.shape[0]), interpolation=cv2.INTER_LANCZOS4)
-                        else:
-                            # 调用面部增强
-                            face_enhanced = opt_face_enhancer.enhance(face_enhanced)
-                            print(f"[帧{i}] 增强完成 - 形状: {face_enhanced.shape}, 类型: {face_enhanced.dtype}, 范围: [{np.min(face_enhanced) if face_enhanced.size > 0 else 'N/A'}, {np.max(face_enhanced) if face_enhanced.size > 0 else 'N/A'}]")
-                            
-                            # 保存增强后的面部图像用于调试
-                            debug_enhanced_path = os.path.join(debug_dir, f"enhanced_face_{i:04d}.png")
-                            cv2.imwrite(debug_enhanced_path, face_enhanced)
-                            
-                            # 裁剪回原始区域（去除画布的padding）
-                            if new_size[0] < 512 or new_size[1] < 512:
-                                face_enhanced = face_enhanced[y_offset:y_offset+face_resized.shape[0], 
-                                                            x_offset:x_offset+face_resized.shape[1]]
-                            
-                            # 调整回原始尺寸
-                            face_bgr = cv2.resize(face_enhanced, (face_w, face_h), interpolation=cv2.INTER_LANCZOS4)
-                            print(f"[帧{i}] 缩放回原始尺寸后 - 形状: {face_bgr.shape}")
+                        # 使用增强后的面部替换原始面部
+                        face = face_enhanced
+                        
                     except Exception as e:
                         print(f"[帧{i}] 面部增强过程出错: {str(e)}")
                         traceback.print_exc()
                         # 如果增强失败，保持原样
                         pass
                 
+                # 确保面部为正确的类型和格式用于合成
+                if np.max(face) <= 1.0:
+                    face_for_blend = (face * 255).clip(0, 255).astype(np.uint8)
+                else:
+                    face_for_blend = face.clip(0, 255).astype(np.uint8)
+                
                 # Compute inverse affine matrix
                 inv_affine_matrix = cv2.invertAffineTransform(affine_matrix)
                 
                 # Get frame size to warp back
-                frame_h, frame_w = ori_frame_bgr.shape[:2]
+                frame_h, frame_w = ori_frame.shape[:2]
                 
-                # Create mask for face - 改进的mask生成和羽化处理
-                mask = np.ones((face_bgr.shape[0], face_bgr.shape[1], 1), dtype=np.float32)
+                # Create mask for face
+                mask = np.ones((face_for_blend.shape[0], face_for_blend.shape[1], 1), dtype=np.float32)
                 mask = cv2.warpAffine(mask, inv_affine_matrix, (frame_w, frame_h))
                 
                 # 保存原始mask用于调试
@@ -544,49 +530,35 @@ class LipsyncPipeline(DiffusionPipeline):
                 if len(mask.shape) == 2:
                     # 如果mask只有2维，先扩展为3维再重复
                     mask = np.expand_dims(mask, axis=2)
-                    mask_3channel = np.repeat(mask, 3, axis=2)
-                else:
-                    # 如果已经是3维，直接重复
-                    mask_3channel = np.repeat(mask, 3, axis=2)
+                mask_3channel = np.repeat(mask, 3, axis=2)
                 
                 # Warp face back to original position
-                warped_face = cv2.warpAffine(face_bgr, inv_affine_matrix, (frame_w, frame_h))
+                warped_face = cv2.warpAffine(face_for_blend, inv_affine_matrix, (frame_w, frame_h))
                 
                 # 保存仿射变换后的面部用于调试
                 debug_warped_path = os.path.join(debug_dir, f"warped_face_{i:04d}.png")
-                cv2.imwrite(debug_warped_path, warped_face)
+                cv2.imwrite(debug_warped_path, cv2.cvtColor(warped_face, cv2.COLOR_RGB2BGR))
                 
-                # 将BGR转换回float32格式，范围0-1
-                warped_face = warped_face.astype(np.float32) / 255.0
-                ori_frame_bgr = ori_frame_bgr.astype(np.float32) / 255.0
+                # 确保面部和原始帧都是RGB格式，使用float32进行混合
+                warped_face_float = warped_face.astype(np.float32) / 255.0
+                ori_frame_float = ori_frame.astype(np.float32) / 255.0
                 
                 # 保存混合前的原始帧用于调试
                 debug_orig_path = os.path.join(debug_dir, f"original_frame_{i:04d}.png")
-                cv2.imwrite(debug_orig_path, (ori_frame_bgr * 255).astype(np.uint8))
+                cv2.imwrite(debug_orig_path, cv2.cvtColor(ori_frame, cv2.COLOR_RGB2BGR))
                 
                 # 检查mixed mask范围，确保它是有效的
                 print(f"[帧{i}] Mask范围: [{np.min(mask_3channel)}, {np.max(mask_3channel)}]")
                 
                 # 混合图像，保持float32格式，使用3通道mask
-                output_frame = ori_frame_bgr * (1 - mask_3channel) + warped_face * mask_3channel
+                output_frame = ori_frame_float * (1 - mask_3channel) + warped_face_float * mask_3channel
                 
                 # 保存混合后的帧用于调试
                 debug_output_path = os.path.join(debug_dir, f"output_frame_{i:04d}.png")
-                cv2.imwrite(debug_output_path, (output_frame * 255).astype(np.uint8))
+                cv2.imwrite(debug_output_path, cv2.cvtColor((output_frame * 255).astype(np.uint8), cv2.COLOR_RGB2BGR))
                 
                 # 转换为uint8用于输出/存储
-                if output_frame.dtype != np.uint8:
-                    print(f"将第{i}帧从{output_frame.dtype}转换为uint8用于输出")
-                    # 如果是浮点类型，先确保范围合适
-                    if np.issubdtype(output_frame.dtype, np.floating):
-                        if output_frame.max() <= 1.0:  # 如果最大值小于等于1，说明是0-1范围
-                            output_frame = (output_frame * 255).clip(0, 255)
-                        else:
-                            output_frame = output_frame.clip(0, 255)  # 裁剪到0-255范围
-                output_frame = output_frame.astype(np.uint8)
-                
-                # Convert back to RGB
-                output_frame = cv2.cvtColor(output_frame, cv2.COLOR_BGR2RGB)
+                output_frame = (output_frame * 255).clip(0, 255).astype(np.uint8)
                 
                 # 保存最终RGB输出帧用于调试
                 debug_final_path = os.path.join(debug_dir, f"final_rgb_{i:04d}.png")
