@@ -82,6 +82,8 @@ def main(config, args):
     print(f"Face enhance: {'Enabled' if args.face_enhance else 'Disabled'}")
     print(f"Face enhance method: {args.face_enhance_method}")
     print(f"Face enhance strength: {args.face_enhance_strength}")
+    print(f"Mouth protection: {'Enabled' if args.mouth_protection else 'Disabled'}")
+    print(f"Mouth protection strength: {args.mouth_protection_strength}")
     print(f"High quality mode: {'Enabled' if args.high_quality else 'Disabled'}")
 
     pipeline(
@@ -96,6 +98,8 @@ def main(config, args):
         face_enhance=args.face_enhance,
         face_enhance_method=args.face_enhance_method,
         face_enhance_strength=args.face_enhance_strength,
+        mouth_protection=args.mouth_protection,
+        mouth_protection_strength=args.mouth_protection_strength,
         high_quality=args.high_quality,
         weight_dtype=dtype,
         width=config.data.resolution,
@@ -122,6 +126,12 @@ if __name__ == "__main__":
                        help="Face enhancement method")
     parser.add_argument("--face_enhance_strength", type=float, default=0.8,
                        help="Face enhancement strength (0.0-1.0)")
+    parser.add_argument("--mouth_protection", action="store_true", default=True,
+                       help="Enable mouth protection during face enhancement")
+    parser.add_argument("--no_mouth_protection", action="store_false", dest="mouth_protection",
+                       help="Disable mouth protection during face enhancement")
+    parser.add_argument("--mouth_protection_strength", type=float, default=0.8,
+                       help="Mouth protection strength (0.0-1.0), 0 for full protection")
     parser.add_argument("--high_quality", action="store_true",
                        help="Use high quality video encoding settings")
     parser.add_argument("--seed", type=int, default=1247)

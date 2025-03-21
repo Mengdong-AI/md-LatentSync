@@ -238,21 +238,40 @@ LatentSync现在支持三种高级面部增强方法，可以显著提高生成�
 ./inference.sh --face_enhance --face_enhance_method gfpgan --face_enhance_strength 0.8 --high_quality
 ```
 
-参数说明：
+面部增强参数说明：
 - `--face_enhance`：启用面部增强
 - `--face_enhance_method`：选择增强方法（gfpgan, codeformer, gpen）
 - `--face_enhance_strength`：设置增强强度（0.0-1.0）
+
+嘴唇保护参数说明：
+- `--mouth_protection`：启用嘴唇保护（默认启用）
+- `--no_mouth_protection`：禁用嘴唇保护
+- `--mouth_protection_strength`：设置嘴唇保护强度（0.0-1.0），0表示完全保留原始嘴唇，1表示完全使用增强嘴唇
+
+其他参数：
 - `--high_quality`：使用高质量视频编码设置
+- `--face_upscale_factor`：设置面部上采样因子（1.0-2.0）
 
 ### Gradio界面使用
 
 1. 勾选 "Face Enhance" 选项
 2. 从下拉菜单选择增强方法（GFPGAN, CodeFormer, GPEN）
 3. 调整增强强度滑块
-4. 点击处理按钮
+4. 勾选 "Mouth Protection" 选项以保护嘴唇区域
+5. 调整嘴唇保护强度滑块
+6. 点击处理按钮
+
+## 嘴唇保护机制
+
+该功能可以保护嘴唇区域，确保面部增强不会影响唇形同步效果：
+
+1. **原理**：在应用面部增强过程中，识别并特殊处理嘴唇区域，以保持原始嘴型
+2. **可控性**：用户可以调整保护强度，平衡嘴唇质量和同步效果
+3. **默认设置**：默认启用嘴唇保护，强度0.8（部分保留原始嘴唇）
 
 ## 注意事项
 
 1. 面部增强处理会增加处理时间，但能显著提高面部质量
-2. 该功能集成了嘴唇区域保护机制，以确保不影响唇形同步效果
-3. CodeFormer和GPEN需要额外安装，请按照安装脚本提示完成安装
+2. CodeFormer和GPEN需要额外安装，请按照安装脚本提示完成安装
+3. 在处理唇形同步视频时，建议保持嘴唇保护功能开启，以确保最佳同步效果
+4. 如果结果视频的嘴唇质量过低，可以尝试调整嘴唇保护强度，在同步准确性和图像质量之间找到平衡

@@ -6,6 +6,8 @@ HIGH_QUALITY=false
 FACE_ENHANCE=false
 FACE_ENHANCE_METHOD="gfpgan"
 FACE_ENHANCE_STRENGTH=0.8
+MOUTH_PROTECTION=true
+MOUTH_PROTECTION_STRENGTH=0.8
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
@@ -30,6 +32,18 @@ while [[ $# -gt 0 ]]; do
             FACE_ENHANCE_STRENGTH="$2"
             shift 2
             ;;
+        --mouth_protection)
+            MOUTH_PROTECTION=true
+            shift
+            ;;
+        --no_mouth_protection)
+            MOUTH_PROTECTION=false
+            shift
+            ;;
+        --mouth_protection_strength)
+            MOUTH_PROTECTION_STRENGTH="$2"
+            shift 2
+            ;;
         *)
             # Save remaining arguments
             POSITIONAL_ARGS+=("$1")
@@ -49,6 +63,13 @@ if [ "$FACE_ENHANCE" = true ]; then
     FE_FLAG="--face_enhance"
 fi
 
+MP_FLAG=""
+if [ "$MOUTH_PROTECTION" = true ]; then
+    MP_FLAG="--mouth_protection"
+else
+    MP_FLAG="--no_mouth_protection"
+fi
+
 # Run inference
 python -m scripts.inference \
   --unet_config_path configs/unet/stage2.yaml \
@@ -60,6 +81,8 @@ python -m scripts.inference \
   --face_upscale_factor $FACE_UPSCALE \
   --face_enhance_method $FACE_ENHANCE_METHOD \
   --face_enhance_strength $FACE_ENHANCE_STRENGTH \
+  --mouth_protection_strength $MOUTH_PROTECTION_STRENGTH \
   $FE_FLAG \
+  $MP_FLAG \
   $HQ_FLAG \
   --seed 1247

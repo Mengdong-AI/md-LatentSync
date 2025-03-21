@@ -14,7 +14,8 @@ class FaceEnhancer:
         enhancement_strength: float = 0.8,
         upscale: int = 1,
         device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
-        mouth_protection: bool = True,
+        mouth_protection: bool = True,  # 默认启用嘴唇保护
+        mouth_protection_strength: float = 0.8,  # 嘴唇保护强度，0表示完全保留原始嘴唇，1表示完全使用增强嘴唇
         model_path: Optional[str] = None
     ):
         """
@@ -26,6 +27,7 @@ class FaceEnhancer:
             upscale (int): 上采样倍数，通常为1或2
             device (str): 设备，'cuda'或'cpu'
             mouth_protection (bool): 是否保护嘴唇区域，减少对唇形同步的影响
+            mouth_protection_strength (float): 嘴唇保护强度，取值范围 [0, 1]，0表示完全保留原始嘴唇
             model_path (str, optional): 模型路径，如果不指定则使用默认路径
         """
         self.method = method.lower()
@@ -33,10 +35,12 @@ class FaceEnhancer:
         self.upscale = upscale
         self.device = device
         self.mouth_protection = mouth_protection
+        self.mouth_protection_strength = max(0.0, min(1.0, mouth_protection_strength))
         self.model = None
         self.model_path = model_path
         
         print(f"正在初始化面部增强器 - 方法: {method}, 强度: {enhancement_strength}")
+        print(f"嘴唇保护: {'已启用' if mouth_protection else '已禁用'}, 保护强度: {mouth_protection_strength}")
         
         # 确保当前目录存在模型文件夹
         os.makedirs('models/faceenhancer', exist_ok=True)
@@ -201,6 +205,14 @@ class FaceEnhancer:
             dilated_mask = cv2.dilate(mouth_mask, np.ones((5, 5), np.uint8), iterations=2)
             blurred_mask = cv2.GaussianBlur(dilated_mask, (15, 15), 0)
             blurred_mask = blurred_mask / 255.0 if blurred_mask.max() > 1.0 else blurred_mask
+            
+            # 根据嘴唇保护强度调整混合比例
+            # 当mouth_protection_strength=0时，完全保留原始嘴唇
+            # 当mouth_protection_strength=1时，完全使用增强后的嘴唇
+            # 中间值则按比例混合
+            if self.mouth_protection_strength > 0:
+                # 调整掩码强度
+                blurred_mask = blurred_mask * (1.0 - self.mouth_protection_strength)
             
             # 将浮点掩码转换回uint8格式
             if enhanced_img.dtype == np.uint8:

@@ -385,6 +385,8 @@ class LipsyncPipeline(DiffusionPipeline):
         face_enhance: bool = False,  # 是否启用面部增强
         face_enhance_method: str = 'gfpgan',  # 面部增强方法
         face_enhance_strength: float = 0.8,  # 面部增强强度
+        mouth_protection: bool = True,  # 是否保护嘴唇区域
+        mouth_protection_strength: float = 0.8,  # 嘴唇保护强度
         high_quality: bool = False,  # 控制视频质量
         num_inference_steps: int = 20,
         guidance_scale: float = 1.5,
@@ -415,9 +417,12 @@ class LipsyncPipeline(DiffusionPipeline):
         if face_enhance:
             self.face_enhancer = FaceEnhancer(
                 enhancement_strength=face_enhance_strength,
-                method=face_enhance_method
+                method=face_enhance_method,
+                mouth_protection=mouth_protection,
+                mouth_protection_strength=mouth_protection_strength
             )
             print(f"面部增强已启用 - 方法: {face_enhance_method}, 强度: {face_enhance_strength}")
+            print(f"嘴唇保护: {'已启用' if mouth_protection else '已禁用'}, 保护强度: {mouth_protection_strength}")
             
         self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 

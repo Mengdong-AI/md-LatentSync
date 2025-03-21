@@ -18,6 +18,8 @@ def process_video(
     face_enhance,
     face_enhance_method,
     face_enhance_strength,
+    mouth_protection,
+    mouth_protection_strength,
     high_quality,
     seed,
 ):
@@ -59,12 +61,15 @@ def process_video(
             face_enhance,
             face_enhance_method,
             face_enhance_strength,
+            mouth_protection,
+            mouth_protection_strength,
             high_quality,
             seed
         )
 
         print(f"Processing with face_upscale_factor={face_upscale_factor} and high_quality={high_quality}")
         print(f"Face enhance: {face_enhance}, method: {face_enhance_method}, strength: {face_enhance_strength}")
+        print(f"Mouth protection: {mouth_protection}, strength: {mouth_protection_strength}")
         print(f"Input video: {video_path}")
         print(f"Input audio: {audio_path}")
         print(f"Output path: {output_path}")
@@ -92,6 +97,8 @@ def create_args(
     face_enhance: bool,
     face_enhance_method: str,
     face_enhance_strength: float,
+    mouth_protection: bool,
+    mouth_protection_strength: float,
     high_quality: bool,
     seed: int
 ) -> argparse.Namespace:
@@ -106,6 +113,8 @@ def create_args(
     parser.add_argument("--face_enhance", action="store_true")
     parser.add_argument("--face_enhance_method", type=str, default="combined")
     parser.add_argument("--face_enhance_strength", type=float, default=0.8)
+    parser.add_argument("--mouth_protection", action="store_true")
+    parser.add_argument("--mouth_protection_strength", type=float, default=0.8)
     parser.add_argument("--high_quality", action="store_true")
     parser.add_argument("--seed", type=int, default=1247)
 
@@ -128,6 +137,8 @@ def create_args(
         face_enhance_method,
         "--face_enhance_strength",
         str(face_enhance_strength),
+        "--mouth_protection_strength",
+        str(mouth_protection_strength),
         "--seed",
         str(seed),
     ]
@@ -137,6 +148,8 @@ def create_args(
         args_list.append("--high_quality")
     if face_enhance:
         args_list.append("--face_enhance")
+    if mouth_protection:
+        args_list.append("--mouth_protection")
     
     return parser.parse_args(args_list)
 
@@ -215,6 +228,23 @@ with gr.Blocks(title="LatentSync Video Processing") as demo:
                 )
 
             with gr.Row():
+                mouth_protection = gr.Checkbox(
+                    label="Mouth Protection", 
+                    value=True,
+                    info="Protect lip shape during face enhancement"
+                )
+
+            with gr.Row():
+                mouth_protection_strength = gr.Slider(
+                    minimum=0.0,
+                    maximum=1.0,
+                    value=0.8,
+                    step=0.1,
+                    label="Mouth Protection Strength",
+                    info="0: fully protect original lips, 1: fully use enhanced lips"
+                )
+
+            with gr.Row():
                 high_quality = gr.Checkbox(
                     label="High Quality Output", 
                     value=False,
@@ -249,6 +279,8 @@ with gr.Blocks(title="LatentSync Video Processing") as demo:
             face_enhance,
             face_enhance_method,
             face_enhance_strength,
+            mouth_protection,
+            mouth_protection_strength,
             high_quality,
             seed,
         ],
