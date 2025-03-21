@@ -6,6 +6,7 @@ import os
 import shutil
 from typing import Callable, List, Optional, Union
 import subprocess
+import traceback
 
 import numpy as np
 import torch
@@ -280,35 +281,43 @@ class LipsyncPipeline(DiffusionPipeline):
         Returns:
             np.ndarray: Restored video, with shape [T, H, W, 3].
         """
+        # 添加输入参数的调试信息
+        print(f"[Debug] Input shapes:")
+        print(f"- faces shape: {faces.shape}, dtype: {faces.dtype}")
+        print(f"- boxes shape: {boxes.shape}, dtype: {boxes.dtype}")
+        print(f"- affine_matrices shape: {affine_matrices.shape}, dtype: {affine_matrices.dtype}")
+        
         # Create debug directory if not exists
         debug_dir = os.path.join(os.path.dirname(source_video_path), "debug_frames")
         os.makedirs(debug_dir, exist_ok=True)
+        print(f"[Debug] Created debug directory: {debug_dir}")
         
         # Read original video
+        print(f"[Debug] Reading video from: {source_video_path}")
         vr = VideoReader(source_video_path)
-        # Get total frame count
         total_frames = len(vr)
+        print(f"[Debug] Total frames in video: {total_frames}")
         
-        # Get original shapes
+        # Get original frames
         original_frames = vr[:]  # [T, H, W, C]
+        print(f"[Debug] Original frames shape: {original_frames.shape if hasattr(original_frames, 'shape') else 'unknown'}")
         
         # 检查 original_frames 是否为可索引对象
         if not hasattr(original_frames, "__getitem__"):
-            print(f"Warning: Cannot index original_frames, converting to numpy array")
+            print(f"[Debug] Converting original_frames to indexable object")
             try:
                 original_frames = original_frames.asnumpy() if hasattr(original_frames, "asnumpy") else np.array(original_frames)
-            except:
-                print(f"Error: Failed to convert original_frames to indexable object")
-                # 如果转换失败，创建一个空帧列表
+                print(f"[Debug] Converted original_frames shape: {original_frames.shape}")
+            except Exception as e:
+                print(f"[Debug] Failed to convert original_frames: {str(e)}")
                 original_frames = []
         
         # 如果 original_frames 为空或无法索引，使用 faces 创建一个空背景
         if len(original_frames) == 0:
-            print(f"Warning: No original frames loaded, creating blank background")
-            # 从第一个 face 获取尺寸信息
+            print(f"[Debug] Creating blank background from faces")
             face_h, face_w = faces[0, 0].shape[1:3] 
-            # 创建一个黑色背景帧列表
             original_frames = [np.zeros((face_h*2, face_w*2, 3), dtype=np.uint8) for _ in range(min(len(faces), total_frames))]
+            print(f"[Debug] Created blank frames with shape: {original_frames[0].shape}")
         
         # 获取原始视频的高度和宽度
         if len(original_frames) > 0:
@@ -317,14 +326,15 @@ class LipsyncPipeline(DiffusionPipeline):
             else:
                 original_h, original_w = original_frames.shape[1:3]
         else:
-            # 如果没有原始帧，使用面部尺寸的2倍作为原始尺寸
             face_h, face_w = faces[0, 0].shape[1:3]
             original_h, original_w = face_h*2, face_w*2
+        print(f"[Debug] Original dimensions: {original_w}x{original_h}")
         
         # Initialize output frames
         output_frames = []
         
         # Iterate through frames
+        print(f"[Debug] Processing {min(len(faces), total_frames)} frames")
         for i in range(min(len(faces), total_frames)):
             try:
                 # Get current frame
@@ -334,43 +344,45 @@ class LipsyncPipeline(DiffusionPipeline):
                     else:
                         ori_frame = original_frames[min(i, len(original_frames)-1)].copy() if hasattr(original_frames, "copy") else np.array(original_frames[min(i, len(original_frames)-1)])
                 else:
-                    # 如果没有原始帧，创建黑色背景
                     ori_frame = np.zeros((original_h, original_w, 3), dtype=np.uint8)
                 
-                # Save original frame for first 5 frames
-                if i < 5:
-                    cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_1_original.png"), cv2.cvtColor(ori_frame, cv2.COLOR_RGB2BGR))
+                print(f"[Debug] Frame {i} - Original frame shape: {ori_frame.shape}, dtype: {ori_frame.dtype}")
                 
                 # Convert to BGR for OpenCV processing
-                ori_frame_bgr = cv2.cvtColor(ori_frame, cv2.COLOR_RGB2BGR)
+                try:
+                    ori_frame_bgr = cv2.cvtColor(ori_frame, cv2.COLOR_RGB2BGR)
+                    print(f"[Debug] Frame {i} - Successfully converted to BGR")
+                except Exception as e:
+                    print(f"[Debug] Frame {i} - Error converting to BGR: {str(e)}")
+                    print(f"[Debug] Frame {i} - Frame stats: min={ori_frame.min()}, max={ori_frame.max()}, mean={ori_frame.mean()}")
+                    raise e
                 
                 # Process face
                 face = faces[i, 0]  # [3, H, W]
                 face = rearrange(face, 'c h w -> h w c')  # [H, W, C]
+                print(f"[Debug] Frame {i} - Face shape after rearrange: {face.shape}, dtype: {face.dtype}")
+                
                 box = boxes[i, 0]  # [4,]
                 affine_matrix = affine_matrices[i, 0]  # [2, 3]
+                print(f"[Debug] Frame {i} - Box: {box}, Affine matrix shape: {affine_matrix.shape}")
                 
                 if face.shape[0] == 0 or box.sum() == 0:
-                    # Skip invalid face
+                    print(f"[Debug] Frame {i} - Invalid face or box, skipping")
                     output_frames.append(ori_frame)
                     continue
                 
                 # Convert face from RGB to BGR (for OpenCV)
-                face_bgr = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
+                try:
+                    face_bgr = cv2.cvtColor(face, cv2.COLOR_RGB2BGR)
+                    print(f"[Debug] Frame {i} - Successfully converted face to BGR")
+                except Exception as e:
+                    print(f"[Debug] Frame {i} - Error converting face to BGR: {str(e)}")
+                    print(f"[Debug] Frame {i} - Face stats: min={face.min()}, max={face.max()}, mean={face.mean()}")
+                    raise e
                 
                 # Save aligned face for first 5 frames
                 if i < 5:
                     cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_2_aligned_face.png"), face_bgr)
-                
-                # Resize face to 512x512 for enhancement if needed
-                if opt_face_enhancer is not None and opt_face_enhancer.enable:
-                    face_enhanced = cv2.resize(face_bgr, (512, 512), interpolation=cv2.INTER_LANCZOS4)
-                    face_enhanced = opt_face_enhancer.enhance(face_enhanced)
-                    face_bgr = cv2.resize(face_enhanced, (face_bgr.shape[1], face_bgr.shape[0]), interpolation=cv2.INTER_LANCZOS4)
-                    
-                    # Save enhanced face for first 5 frames
-                    if i < 5:
-                        cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_3_enhanced_face.png"), face_bgr)
                 
                 # Compute inverse affine matrix
                 inv_affine_matrix = cv2.invertAffineTransform(affine_matrix)
@@ -384,7 +396,12 @@ class LipsyncPipeline(DiffusionPipeline):
                 mask = cv2.GaussianBlur(mask, (31, 31), 10)
                 
                 # Warp face back to original position
-                warped_face = cv2.warpAffine(face_bgr, inv_affine_matrix, (frame_w, frame_h))
+                try:
+                    warped_face = cv2.warpAffine(face_bgr, inv_affine_matrix, (frame_w, frame_h))
+                    print(f"[Debug] Frame {i} - Successfully warped face")
+                except Exception as e:
+                    print(f"[Debug] Frame {i} - Error warping face: {str(e)}")
+                    raise e
                 
                 # Save warped face and mask for first 5 frames
                 if i < 5:
@@ -399,17 +416,18 @@ class LipsyncPipeline(DiffusionPipeline):
                 output_frame = (output_frame * 255.0).astype(np.uint8)
                 
                 # Convert back to RGB
-                output_frame = cv2.cvtColor(output_frame, cv2.COLOR_BGR2RGB)
-                
-                # Save final result for first 5 frames
-                if i < 5:
-                    cv2.imwrite(os.path.join(debug_dir, f"frame_{i:03d}_5_final.png"), cv2.cvtColor(output_frame, cv2.COLOR_RGB2BGR))
+                try:
+                    output_frame = cv2.cvtColor(output_frame, cv2.COLOR_BGR2RGB)
+                    print(f"[Debug] Frame {i} - Successfully converted output to RGB")
+                except Exception as e:
+                    print(f"[Debug] Frame {i} - Error converting output to RGB: {str(e)}")
+                    raise e
                 
                 output_frames.append(output_frame)
             
             except Exception as e:
-                print(f"Error processing frame {i}: {e}")
-                # If error, try to use original frame or create a blank one
+                print(f"[Debug] Error processing frame {i}: {str(e)}")
+                traceback.print_exc()  # 打印完整的错误堆栈
                 try:
                     if len(original_frames) > 0 and i < len(original_frames):
                         if isinstance(original_frames, list):
@@ -417,23 +435,22 @@ class LipsyncPipeline(DiffusionPipeline):
                         else:
                             output_frames.append(np.array(original_frames[i]))
                     else:
-                        # 创建空白帧
                         blank_frame = np.zeros((original_h, original_w, 3), dtype=np.uint8)
                         output_frames.append(blank_frame)
                 except Exception as e2:
-                    print(f"Error creating fallback frame: {e2}")
-                    # 最后的备用方案：创建一个小的空白帧
+                    print(f"[Debug] Error creating fallback frame: {str(e2)}")
                     output_frames.append(np.zeros((256, 256, 3), dtype=np.uint8))
         
         # 确保至少有一帧
         if len(output_frames) == 0:
-            print("Warning: No frames processed, creating a blank frame")
+            print("[Debug] No frames processed, creating a blank frame")
             output_frames = [np.zeros((original_h, original_w, 3), dtype=np.uint8)]
         
         # Stack frames
         output_frames = np.stack(output_frames, axis=0)
+        print(f"[Debug] Final output shape: {output_frames.shape}, dtype: {output_frames.dtype}")
         
-        print(f"Debug frames saved to: {debug_dir}")
+        print(f"[Debug] Debug frames saved to: {debug_dir}")
         return output_frames
 
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
