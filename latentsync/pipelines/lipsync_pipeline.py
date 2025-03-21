@@ -287,6 +287,15 @@ class LipsyncPipeline(DiffusionPipeline):
         print(f"- boxes shape: {boxes.shape}, dtype: {boxes.dtype}")
         print(f"- affine_matrices shape: {affine_matrices.shape}, dtype: {affine_matrices.dtype}")
         
+        # 转换faces的数据类型为float32
+        if faces.dtype == np.float16:
+            print("[Debug] Converting faces from float16 to float32")
+            faces = faces.astype(np.float32)
+            # 确保数值范围在[-1, 1]之间
+            if faces.min() < -1 or faces.max() > 1:
+                print("[Debug] Normalizing face values to [-1, 1] range")
+                faces = np.clip(faces, -1, 1)
+        
         # Create debug directory if not exists
         debug_dir = os.path.join(os.path.dirname(source_video_path), "debug_frames")
         os.makedirs(debug_dir, exist_ok=True)
