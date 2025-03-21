@@ -4,9 +4,11 @@ from scripts.inference import main
 from omegaconf import OmegaConf
 import argparse
 from datetime import datetime
+import os
 
 CONFIG_PATH = Path("configs/unet/stage2.yaml")
 CHECKPOINT_PATH = Path("checkpoints/latentsync_unet.pt")
+DEBUG_FRAMES_DIR = Path("debug_frames")
 
 
 def process_video(
@@ -156,136 +158,168 @@ def create_args(
 
 # Create Gradio interface
 with gr.Blocks(title="LatentSync Video Processing") as demo:
-    gr.Markdown(
-        """
-    # LatentSync: Taming Audio-Conditioned Latent Diffusion Models for Lip Sync with SyncNet Supervision
-    Upload a video and audio file to process with LatentSync model.
+    with gr.Tabs():
+        with gr.Tab("Video Processing"):
+            gr.Markdown(
+                """
+            # LatentSync: Taming Audio-Conditioned Latent Diffusion Models for Lip Sync with SyncNet Supervision
+            Upload a video and audio file to process with LatentSync model.
 
-    <div align="center">
-        <strong>Chunyu Li1,2  Chao Zhang1  Weikai Xu1  Jinghui Xie1,†  Weiguo Feng1
-        Bingyue Peng1  Weiwei Xing2,†</strong>
-    </div>
+            <div align="center">
+                <strong>Chunyu Li1,2  Chao Zhang1  Weikai Xu1  Jinghui Xie1,†  Weiguo Feng1
+                Bingyue Peng1  Weiwei Xing2,†</strong>
+            </div>
 
-    <div align="center">
-        <strong>1ByteDance   2Beijing Jiaotong University</strong>
-    </div>
+            <div align="center">
+                <strong>1ByteDance   2Beijing Jiaotong University</strong>
+            </div>
 
-    <div style="display:flex;justify-content:center;column-gap:4px;">
-        <a href="https://github.com/bytedance/LatentSync">
-            <img src='https://img.shields.io/badge/GitHub-Repo-blue'>
-        </a> 
-        <a href="https://arxiv.org/pdf/2412.09262">
-            <img src='https://img.shields.io/badge/ArXiv-Paper-red'>
-        </a>
-    </div>
-    """
-    )
-
-    with gr.Row():
-        with gr.Column():
-            video_input = gr.Video(label="Input Video")
-            audio_input = gr.Audio(label="Input Audio", type="filepath")
-
-            with gr.Row():
-                guidance_scale = gr.Slider(
-                    minimum=1.0,
-                    maximum=2.5,
-                    value=1.5,
-                    step=0.5,
-                    label="Guidance Scale",
-                )
-                inference_steps = gr.Slider(minimum=10, maximum=50, value=20, step=1, label="Inference Steps")
-            
-            with gr.Row():
-                face_upscale_factor = gr.Slider(
-                    minimum=1.0,
-                    maximum=2.0,
-                    value=1.0,
-                    step=0.1,
-                    label="Face Upscale Factor",
-                    info="Higher values improve face details (1.0-2.0)"
-                )
-                face_enhance = gr.Checkbox(
-                    label="Face Enhance", 
-                    value=False,
-                    info="Enable for face enhancement"
-                )
-
-            with gr.Row():
-                face_enhance_method = gr.Dropdown(
-                    choices=["gpen", "gfpgan", "codeformer"],
-                    value="gfpgan",
-                    label="Face Enhance Method",
-                    info="Select the method for face enhancement"
-                )
-                face_enhance_strength = gr.Slider(
-                    minimum=0.0,
-                    maximum=1.0,
-                    value=0.8,
-                    step=0.1,
-                    label="Face Enhance Strength",
-                    info="Adjust the strength of face enhancement"
-                )
-
-            with gr.Row():
-                mouth_protection = gr.Checkbox(
-                    label="Mouth Protection", 
-                    value=True,
-                    info="Protect lip shape during face enhancement"
-                )
-
-            with gr.Row():
-                mouth_protection_strength = gr.Slider(
-                    minimum=0.0,
-                    maximum=1.0,
-                    value=0.8,
-                    step=0.1,
-                    label="Mouth Protection Strength",
-                    info="0: fully protect original lips, 1: fully use enhanced lips"
-                )
-
-            with gr.Row():
-                high_quality = gr.Checkbox(
-                    label="High Quality Output", 
-                    value=False,
-                    info="Enable for better video quality (slower)"
-                )
-
-            with gr.Row():
-                seed = gr.Number(value=1247, label="Random Seed", precision=0)
-
-            process_btn = gr.Button("Process Video")
-
-        with gr.Column():
-            video_output = gr.Video(label="Output Video")
-
-            gr.Examples(
-                examples=[
-                    ["assets/demo1_video.mp4", "assets/demo1_audio.wav"],
-                    ["assets/demo2_video.mp4", "assets/demo2_audio.wav"],
-                    ["assets/demo3_video.mp4", "assets/demo3_audio.wav"],
-                ],
-                inputs=[video_input, audio_input],
+            <div style="display:flex;justify-content:center;column-gap:4px;">
+                <a href="https://github.com/bytedance/LatentSync">
+                    <img src='https://img.shields.io/badge/GitHub-Repo-blue'>
+                </a> 
+                <a href="https://arxiv.org/pdf/2412.09262">
+                    <img src='https://img.shields.io/badge/ArXiv-Paper-red'>
+                </a>
+            </div>
+            """
             )
 
-    process_btn.click(
-        fn=process_video,
-        inputs=[
-            video_input,
-            audio_input,
-            guidance_scale,
-            inference_steps,
-            face_upscale_factor,
-            face_enhance,
-            face_enhance_method,
-            face_enhance_strength,
-            mouth_protection,
-            mouth_protection_strength,
-            high_quality,
-            seed,
-        ],
-        outputs=video_output,
-    )
+            with gr.Row():
+                with gr.Column():
+                    video_input = gr.Video(label="Input Video")
+                    audio_input = gr.Audio(label="Input Audio", type="filepath")
+
+                    with gr.Row():
+                        guidance_scale = gr.Slider(
+                            minimum=1.0,
+                            maximum=2.5,
+                            value=1.5,
+                            step=0.5,
+                            label="Guidance Scale",
+                        )
+                        inference_steps = gr.Slider(minimum=10, maximum=50, value=20, step=1, label="Inference Steps")
+                    
+                    with gr.Row():
+                        face_upscale_factor = gr.Slider(
+                            minimum=1.0,
+                            maximum=2.0,
+                            value=1.0,
+                            step=0.1,
+                            label="Face Upscale Factor",
+                            info="Higher values improve face details (1.0-2.0)"
+                        )
+                        face_enhance = gr.Checkbox(
+                            label="Face Enhance", 
+                            value=False,
+                            info="Enable for face enhancement"
+                        )
+
+                    with gr.Row():
+                        face_enhance_method = gr.Dropdown(
+                            choices=["gpen", "gfpgan", "codeformer"],
+                            value="gfpgan",
+                            label="Face Enhance Method",
+                            info="Select the method for face enhancement"
+                        )
+                        face_enhance_strength = gr.Slider(
+                            minimum=0.0,
+                            maximum=1.0,
+                            value=0.8,
+                            step=0.1,
+                            label="Face Enhance Strength",
+                            info="Adjust the strength of face enhancement"
+                        )
+
+                    with gr.Row():
+                        mouth_protection = gr.Checkbox(
+                            label="Mouth Protection", 
+                            value=True,
+                            info="Protect lip shape during face enhancement"
+                        )
+
+                    with gr.Row():
+                        mouth_protection_strength = gr.Slider(
+                            minimum=0.0,
+                            maximum=1.0,
+                            value=0.8,
+                            step=0.1,
+                            label="Mouth Protection Strength",
+                            info="0: fully protect original lips, 1: fully use enhanced lips"
+                        )
+
+                    with gr.Row():
+                        high_quality = gr.Checkbox(
+                            label="High Quality Output", 
+                            value=False,
+                            info="Enable for better video quality (slower)"
+                        )
+
+                    with gr.Row():
+                        seed = gr.Number(value=1247, label="Random Seed", precision=0)
+
+                    process_btn = gr.Button("Process Video")
+
+                with gr.Column():
+                    video_output = gr.Video(label="Output Video")
+
+                    gr.Examples(
+                        examples=[
+                            ["assets/demo1_video.mp4", "assets/demo1_audio.wav"],
+                            ["assets/demo2_video.mp4", "assets/demo2_audio.wav"],
+                            ["assets/demo3_video.mp4", "assets/demo3_audio.wav"],
+                        ],
+                        inputs=[video_input, audio_input],
+                    )
+
+            process_btn.click(
+                fn=process_video,
+                inputs=[
+                    video_input,
+                    audio_input,
+                    guidance_scale,
+                    inference_steps,
+                    face_upscale_factor,
+                    face_enhance,
+                    face_enhance_method,
+                    face_enhance_strength,
+                    mouth_protection,
+                    mouth_protection_strength,
+                    high_quality,
+                    seed,
+                ],
+                outputs=video_output,
+            )
+
+        with gr.Tab("Debug Frames"):
+            gr.Markdown(
+                """
+            # Debug Frames Browser
+            Browse the debug frames generated during processing.
+            """
+            )
+            
+            def list_debug_frames():
+                if not DEBUG_FRAMES_DIR.exists():
+                    return []
+                files = []
+                for file in DEBUG_FRAMES_DIR.rglob("*"):
+                    if file.is_file() and file.suffix.lower() in ['.png', '.jpg', '.jpeg']:
+                        files.append(str(file))
+                return sorted(files)
+
+            gallery = gr.Gallery(
+                label="Debug Frames",
+                show_label=True,
+                elem_id="debug_frames_gallery",
+                columns=[3],
+                rows=[3],
+                object_fit="contain",
+                height="auto",
+            )
+
+            refresh_btn = gr.Button("Refresh")
+            refresh_btn.click(fn=list_debug_frames, outputs=gallery)
 
 if __name__ == "__main__":
     import argparse

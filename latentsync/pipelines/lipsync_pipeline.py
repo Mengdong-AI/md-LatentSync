@@ -314,21 +314,45 @@ class LipsyncPipeline(DiffusionPipeline):
             
             # Resize face to match original face box size
             face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
-            
+
             # Convert channels and normalize
             face = rearrange(face, "c h w -> h w c")
             face = (face / 2 + 0.5).clamp(0, 1)
             face = (face * 255).to(torch.uint8).cpu().numpy()
+
+            # 调试：保存前3帧的中间结果
+            if i < 3:
+                debug_dir = "debug_frames"
+                os.makedirs(debug_dir, exist_ok=True)
+                
+                # 保存原始视频帧
+                cv2.imwrite(f"{debug_dir}/frame_{i}_1_original.jpg", cv2.cvtColor(video_frame, cv2.COLOR_RGB2BGR))
+                
+                # 保存生成的人脸
+                cv2.imwrite(f"{debug_dir}/frame_{i}_2_generated_face.jpg", cv2.cvtColor(face, cv2.COLOR_RGB2BGR))
+
+                # 如果启用了面部增强，保存增强后的人脸
+                if opt_face_enhancer is not None:
+                    enhanced_face = opt_face_enhancer.enhance(face)
+                    cv2.imwrite(f"{debug_dir}/frame_{i}_3_enhanced_face.jpg", cv2.cvtColor(enhanced_face, cv2.COLOR_RGB2BGR))
+                    face = enhanced_face
+
+                # 保存恢复后的帧（粘贴人脸之前）
+                cv2.imwrite(f"{debug_dir}/frame_{i}_4_before_restore.jpg", cv2.cvtColor(video_frame, cv2.COLOR_RGB2BGR))
             
             # Restore face back to original frame
             out_frame = self.image_processor.restorer.restore_img(video_frame, face, affine_matrix)
             
+            # 调试：保存最终结果
+            if i < 3:
+                cv2.imwrite(f"{debug_dir}/frame_{i}_5_final_result.jpg", cv2.cvtColor(out_frame, cv2.COLOR_RGB2BGR))
+            
             # Apply face enhancement if enabled
             if opt_face_enhancer is not None:
                 out_frame = opt_face_enhancer.enhance(out_frame)
-            
+
             out_frames.append(out_frame)
-        
+
         return np.stack(out_frames, axis=0)
 
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
