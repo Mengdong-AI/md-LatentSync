@@ -371,6 +371,12 @@ class LipsyncPipeline(DiffusionPipeline):
                 face = rearrange(face, 'c h w -> h w c')  # [H, W, C]
                 print(f"[Debug] Frame {i} - Face shape after rearrange: {face.shape}, dtype: {face.dtype}")
                 
+                # 将face从[-1,1]转换到[0,1]范围
+                face = (face + 1.0) * 0.5
+                face = np.clip(face, 0, 1)
+                # 转换到[0,255]范围
+                face = (face * 255).astype(np.uint8)
+                
                 box = boxes[i, 0]  # [4,]
                 affine_matrix = affine_matrices[i, 0]  # [2, 3]
                 print(f"[Debug] Frame {i} - Box: {box}, Affine matrix shape: {affine_matrix.shape}")
