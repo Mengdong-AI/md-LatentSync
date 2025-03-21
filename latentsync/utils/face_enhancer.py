@@ -6,6 +6,7 @@ import warnings
 import onnxruntime as ort
 import time
 import traceback
+import torch
 
 class FaceEnhancer:
     """人脸增强器，支持使用ONNX模型的GPEN，GFPGAN和CodeFormer三种增强方式"""
@@ -73,9 +74,11 @@ class FaceEnhancer:
             if 'CUDAExecutionProvider' in available_providers:
                 provider = ['CUDAExecutionProvider']
                 print("使用CUDA执行提供程序")
+                self.device = 'cuda'
             else:
                 provider = ['CPUExecutionProvider']
                 print("使用CPU执行提供程序")
+                self.device = 'cpu'
                 
             # 详细记录ONNX运行时版本
             print(f"ONNX运行时版本: {ort.__version__}")
@@ -134,308 +137,207 @@ class FaceEnhancer:
             traceback.print_exc()
             raise RuntimeError(f"无法初始化面部增强器: {str(e)}")
     
-    def preprocess(self, img, face_landmarks=None):
+    def preprocess(self, img):
         """
-        Preprocess image for the model.
+        Preprocess the input image for the model.
+        
         Args:
-            img: input image, RGB order
-            face_landmarks: face landmarks if available
-
+            img: Input image in BGR format (OpenCV) or RGB format (PIL)
+            
         Returns:
-            Preprocessed image
+            Preprocessed image ready for the model
         """
-        try:
-            # 创建调试目录
-            debug_dir = "enhance_debug"
-            os.makedirs(debug_dir, exist_ok=True)
-            
-            # 保存原始输入
-            try:
-                raw_input_path = os.path.join(debug_dir, "raw_input.png")
-                raw_input = img.astype(np.uint8) if np.max(img) <= 1.0 else img.clip(0, 255).astype(np.uint8)
-                cv2.imwrite(raw_input_path, cv2.cvtColor(raw_input, cv2.COLOR_RGB2BGR))
-            except Exception as e:
-                print(f"保存原始输入出错: {str(e)}")
-            
-            # 检查输入是否有效
-            if img is None or img.size == 0:
-                print("错误: 输入图像为None或空")
-                return None
-                
-            if np.isnan(img).any() or np.isinf(img).any():
-                print("警告: 图像包含无效数据")
-                img = np.nan_to_num(img, nan=0, posinf=1, neginf=0)
-                
-            # GPEN预处理 
-            if self.enhancement_method == 'gpen':
-                # 检查输入图像格式和类型
-                print(f"GPEN输入图像: 形状={img.shape}, 类型={img.dtype}, 值范围=[{np.min(img)}, {np.max(img)}]")
-                
-                # 确保图像为uint8类型
-                if np.max(img) <= 1.0:
-                    img = (img * 255).astype(np.uint8)
-                else:
-                    img = img.astype(np.uint8)
-                
-                # 保存调整前的图像用于调试
-                cv2.imwrite(os.path.join(debug_dir, "before_resize.png"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-                
-                # 保持宽高比调整大小到模型分辨率
-                h, w = img.shape[:2]
-                scale = min(self.resolution[0]/h, self.resolution[1]/w)
-                new_size = (int(w*scale), int(h*scale))
-                
-                img_resized = cv2.resize(img, new_size, interpolation=cv2.INTER_LANCZOS4)
-                
-                # 创建新画布并放入调整大小后的图像
-                canvas = np.zeros((self.resolution[0], self.resolution[1], 3), dtype=np.uint8)
-                y_offset = (self.resolution[0] - new_size[1]) // 2
-                x_offset = (self.resolution[1] - new_size[0]) // 2
-                
-                canvas[y_offset:y_offset+new_size[1], x_offset:x_offset+new_size[0]] = img_resized
-                img_resized = canvas
-                
-                # 保存调整后的图像用于调试
-                cv2.imwrite(os.path.join(debug_dir, "after_resize.png"), cv2.cvtColor(img_resized, cv2.COLOR_RGB2BGR))
-                
-                # 从RGB转换为BGR (GPEN模型需要BGR输入)
-                img_bgr = cv2.cvtColor(img_resized, cv2.COLOR_RGB2BGR).astype(np.float32) / 255.0
-                
-                # 保存预处理后图像用于调试
-                preproc_path = os.path.join(debug_dir, "preprocessed.png")
-                preproc_vis = (img_bgr * 255).astype(np.uint8)
-                cv2.imwrite(preproc_path, preproc_vis)
-                
-                # 转换为CHW格式
-                img_chw = img_bgr.transpose((2, 0, 1))
-                
-                # 归一化到[-1,1]范围
-                img_norm = (img_chw - 0.5) / 0.5
-                
-                # 添加批次维度
-                img_batch = np.expand_dims(img_norm, axis=0).astype(np.float32)
-                
-                # 保存GPEN输入
-                try:
-                    gpen_input_path = os.path.join(debug_dir, "gpen_input.png")
-                    gpen_input_vis = ((img_norm.transpose(1, 2, 0) + 1) / 2 * 255).astype(np.uint8)
-                    cv2.imwrite(gpen_input_path, gpen_input_vis)
-                except Exception as e:
-                    print(f"保存GPEN输入出错: {str(e)}")
-                
-                print(f"GPEN预处理完成，输入形状: {img_batch.shape}, 输入值范围: [{np.min(img_batch)}, {np.max(img_batch)}]")
-                return img_batch, x_offset, y_offset, new_size
-                
-            # 其他方法的预处理保持不变...
-            # ...此处省略其他方法的预处理代码...
-                
-        except Exception as e:
-            print(f"预处理图像时出错: {str(e)}")
-            traceback.print_exc()
+        debug_dir = os.path.join(os.getcwd(), "debug_images")
+        os.makedirs(debug_dir, exist_ok=True)
+        
+        # 保存原始输入图像
+        raw_input_path = os.path.join(debug_dir, "raw_input.png")
+        if img is None:
+            print(f"[Error] Input image is None")
             return None
+            
+        # 检查输入图像是否有有效数据
+        if not img.size or np.isnan(img).any() or np.isinf(img).any():
+            print(f"[Error] Input image contains invalid data: size={img.size if hasattr(img, 'size') else 'N/A'}, has NaN={np.isnan(img).any() if isinstance(img, np.ndarray) else 'N/A'}, has Inf={np.isinf(img).any() if isinstance(img, np.ndarray) else 'N/A'}")
+            return None
+            
+        # 保存原始输入图像
+        try:
+            if np.max(img) <= 1.0:
+                input_debug = (img * 255.0).clip(0, 255).astype(np.uint8)
+            else:
+                input_debug = img.clip(0, 255).astype(np.uint8)
+            # 输入已经是BGR格式，直接保存
+            cv2.imwrite(raw_input_path, input_debug)
+            print(f"[Debug] Saved raw input image, shape={img.shape}, dtype={img.dtype}, range=[{np.min(img)}, {np.max(img)}]")
+        except Exception as e:
+            print(f"[Error] Failed to save raw input image: {e}")
+        
+        # 保存调整大小前的图像
+        before_resize_path = os.path.join(debug_dir, "before_resize.png")
+        try:
+            before_resize_img = input_debug.copy()  # 使用已转换的input_debug
+            cv2.imwrite(before_resize_path, before_resize_img)
+            print(f"[Debug] Saved image before resize, shape={before_resize_img.shape}")
+        except Exception as e:
+            print(f"[Error] Failed to save image before resize: {e}")
+        
+        # 确保输入图像是np.uint8类型，并保持BGR格式
+        if img.dtype != np.uint8:
+            if np.max(img) <= 1.0:
+                img = (img * 255.0).clip(0, 255).astype(np.uint8)
+            else:
+                img = img.clip(0, 255).astype(np.uint8)
+            print(f"[Debug] Converted input to uint8, shape={img.shape}, dtype={img.dtype}, range=[{np.min(img)}, {np.max(img)}]")
+        
+        # 保持原始图像纵横比的同时调整大小
+        h, w = img.shape[:2]
+        size = self.resolution[0]  # Assuming self.resolution is a tuple
+        
+        # 计算新的高度和宽度，保持纵横比
+        if h > w:
+            new_h = size
+            new_w = int(w * size / h)
+        else:
+            new_w = size
+            new_h = int(h * size / w)
+        
+        # 调整图像大小，保持纵横比
+        resized_img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        
+        # 创建一个空白图像，形状为预期的方形
+        square_img = np.zeros((size, size, 3), dtype=np.uint8)
+        
+        # 计算居中的位置
+        y_offset = (size - new_h) // 2
+        x_offset = (size - new_w) // 2
+        
+        # 将调整大小的图像放在方形画布的中央
+        square_img[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized_img
+        
+        # 保存调整大小后的图像
+        after_resize_path = os.path.join(debug_dir, "after_resize.png")
+        try:
+            cv2.imwrite(after_resize_path, square_img)
+            print(f"[Debug] Saved image after resize, shape={square_img.shape}")
+        except Exception as e:
+            print(f"[Error] Failed to save image after resize: {e}")
+        
+        # square_img 已经是BGR格式，GPEN模型需要BGR格式输入
+        # 保存最终输入到GPEN模型的图像
+        gpen_input_path = os.path.join(debug_dir, "gpen_input.png")
+        try:
+            cv2.imwrite(gpen_input_path, square_img)
+            print(f"[Debug] Saved GPEN input image, shape={square_img.shape}")
+        except Exception as e:
+            print(f"[Error] Failed to save GPEN input image: {e}")
+        
+        # 转换为模型需要的格式
+        img = square_img.astype('float32') / 255.0
+        img = img.transpose(2, 0, 1)  # HWC -> CHW
+        img = torch.from_numpy(img).unsqueeze(0)  # CHW -> NCHW
+        print(f"[Debug] Preprocessed tensor shape: {img.shape}, type: {img.dtype}")
+        
+        return img
     
-    def enhance(self, img, face_landmarks=None):
+    def enhance(self, img):
         """
         Enhance a face image.
         Args:
-            img: input image, RGB order
-            face_landmarks: face landmarks if available
-
+            img: Input image in RGB format (HWC)
+            
         Returns:
-            Enhanced image
+            Enhanced image in RGB format (HWC)
         """
+        print(f"[Debug] Input to enhance: shape={img.shape if img is not None else 'None'}, dtype={img.dtype if img is not None else 'None'}")
+        
+        # 保存输入图像
+        debug_dir = os.path.join(os.getcwd(), "debug_images")
+        os.makedirs(debug_dir, exist_ok=True)
+        
+        # 保存原始增强器输入
+        enhancer_input_path = os.path.join(debug_dir, "enhancer_input_rgb.png")
+        if np.max(img) <= 1.0:
+            input_debug = (img * 255.0).clip(0, 255).astype(np.uint8)
+        else:
+            input_debug = img.clip(0, 255).astype(np.uint8)
+        cv2.imwrite(enhancer_input_path, cv2.cvtColor(input_debug, cv2.COLOR_RGB2BGR))
+        
+        # 转换输入图像为BGR格式，因为GPEN模型需要BGR输入
+        if np.max(img) <= 1.0:
+            img_bgr = cv2.cvtColor((img * 255.0).clip(0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+        else:
+            img_bgr = cv2.cvtColor(img.clip(0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+        
+        # 保存转换后的BGR图像
+        bgr_input_path = os.path.join(debug_dir, "enhancer_input_bgr.png")
+        cv2.imwrite(bgr_input_path, img_bgr)
+        
+        # 预处理输入图像
+        inp = self.preprocess(img_bgr)
+        if inp is None:
+            print("[Error] Failed to preprocess input image")
+            return img  # 返回原始图像
+        
+        # 运行ONNX模型推理
         try:
-            # 创建调试目录
-            debug_dir = "enhance_debug"
-            os.makedirs(debug_dir, exist_ok=True)
-            
-            # 保存输入图像用于调试
-            try:
-                input_debug_path = os.path.join(debug_dir, "input_image.png")
-                input_debug = (img * 255).clip(0, 255).astype(np.uint8) if np.max(img) <= 1.0 else img.clip(0, 255).astype(np.uint8)
-                cv2.imwrite(input_debug_path, cv2.cvtColor(input_debug, cv2.COLOR_RGB2BGR))
-            except Exception as e:
-                print(f"保存输入图像时出错: {str(e)}")
-            
-            # 检查输入图像是否有效
-            if img is None or img.size == 0:
-                print("输入图像无效，无法增强")
-                return img
-                
-            # 记录原始图像
-            original_img = img.copy()
-            print(f"输入图像: 形状={img.shape}, 类型={img.dtype}, 值范围=[{np.min(img)}, {np.max(img)}]")
-            
-            # 检查模型会话是否可用
-            if not hasattr(self, 'ort_session') or self.ort_session is None:
-                print("错误: ONNX会话未初始化")
-                return original_img
-                
-            # 保存原始图像尺寸
-            orig_h, orig_w = img.shape[:2]
-                
-            # 预处理图像
-            if self.enhancement_method == 'gpen':
-                preprocessed_data = self.preprocess(img, face_landmarks)
-                if preprocessed_data is None:
-                    print("预处理失败，返回原始图像")
-                    return original_img
-                    
-                preprocessed, x_offset, y_offset, new_size = preprocessed_data
+            # 为ONNX输入准备numpy数组
+            if isinstance(inp, torch.Tensor):
+                inp_numpy = inp.cpu().numpy()
             else:
-                preprocessed = self.preprocess(img, face_landmarks)
-                if preprocessed is None:
-                    print("预处理失败，返回原始图像")
-                    return original_img
+                inp_numpy = inp
                 
-            # 执行推理 (GPEN实现)
-            if self.enhancement_method == 'gpen':
-                try:
-                    print("执行GPEN推理...")
-                    # 使用模型本身的输入名称进行推理而不是固定的'input'
-                    input_feed = {self.input_name: preprocessed}
-                    print(f"使用输入名称 '{self.input_name}' 进行推理")
-                    
-                    outputs = self.ort_session.run(None, input_feed)
-                    
-                    if not outputs or len(outputs) == 0:
-                        print("GPEN模型未产生输出")
-                        return original_img
+            # 确保输入是正确的格式
+            print(f"[Debug] Model input: shape={inp_numpy.shape}, type={inp_numpy.dtype}")
+            
+            # 运行ONNX推理
+            feed = {self.input_name: inp_numpy}
+            output = self.ort_session.run(None, feed)
+            
+            # 保存原始模型输出以进行调试
+            raw_output_path = os.path.join(debug_dir, "raw_model_output.png")
+            try:
+                # 使用输出数组的第一个元素（模型可能有多个输出）
+                output_arr = output[0]
                 
-                    # 获取第一个输出
-                    output = outputs[0][0]
-                    print(f"GPEN输出: 形状={output.shape}, 类型={output.dtype}, 值范围=[{np.min(output)}, {np.max(output)}]")
-                    
-                    # 保存原始模型输出
-                    try:
-                        raw_output_path = os.path.join(debug_dir, "raw_model_output.png")
-                        output_vis = ((output.clip(-1, 1) + 1) / 2 * 255).astype(np.uint8)
-                        if output.shape[0] == 3:  # CHW格式
-                            output_vis = output_vis.transpose(1, 2, 0)
-                        cv2.imwrite(raw_output_path, output_vis)
-                    except Exception as e:
-                        print(f"保存原始输出出错: {str(e)}")
-                    
-                    # 后处理
-                    # 检查输出格式
-                    if output.shape[0] == 3:  # CHW格式
-                        print("输出是CHW格式，转换为HWC")
-                        # 从[-1,1]转回[0,1]
-                        output_norm = (output.transpose(1, 2, 0).clip(-1, 1) + 1) / 2
-                    else:  # 已经是HWC格式
-                        print("输出已经是HWC格式")
-                        output_norm = (output.clip(-1, 1) + 1) / 2
-                    
-                    # 将输出转为BGR格式，再转回RGB
-                    output_bgr = (output_norm * 255).clip(0, 255).astype(np.uint8)
-                    output_rgb = cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB)
-                    
-                    # 保存转换后的RGB输出
-                    try:
-                        rgb_output_path = os.path.join(debug_dir, "model_output_rgb.png")
-                        cv2.imwrite(rgb_output_path, cv2.cvtColor(output_rgb, cv2.COLOR_RGB2BGR))
-                    except Exception as e:
-                        print(f"保存RGB输出出错: {str(e)}")
-                    
-                    # 裁剪回原始区域
-                    if new_size[0] < self.resolution[1] or new_size[1] < self.resolution[0]:
-                        print(f"裁剪输出 - 原始尺寸: {new_size}, 裁剪区域: x={x_offset}, y={y_offset}")
-                        output_rgb = output_rgb[y_offset:y_offset+new_size[1], x_offset:x_offset+new_size[0]]
-                    
-                    # 保存裁剪后的输出
-                    try:
-                        clipped_output_path = os.path.join(debug_dir, "clipped_output.png")
-                        cv2.imwrite(clipped_output_path, cv2.cvtColor(output_rgb, cv2.COLOR_RGB2BGR))
-                    except Exception as e:
-                        print(f"保存裁剪后输出出错: {str(e)}")
-                    
-                    # 调整大小以匹配输入
-                    if (output_rgb.shape[0] != orig_h or output_rgb.shape[1] != orig_w):
-                        output_rgb = cv2.resize(output_rgb, (orig_w, orig_h), interpolation=cv2.INTER_LANCZOS4)
-                    
-                    # 保存调整大小后的输出
-                    try:
-                        resized_output_path = os.path.join(debug_dir, "gpen_output_rgb.png")
-                        cv2.imwrite(resized_output_path, cv2.cvtColor(output_rgb, cv2.COLOR_RGB2BGR))
-                    except Exception as e:
-                        print(f"保存调整大小后输出出错: {str(e)}")
-                    
-                    # 确保原图和增强图像类型一致
-                    original_for_blend = original_img
-                    if np.max(original_img) <= 1.0:
-                        # 如果原图是[0,1]范围，将输出转换为相同范围
-                        output_rgb = output_rgb.astype(np.float32) / 255.0
-                    else:
-                        # 如果原图是[0,255]范围，将原图转换为uint8
-                        if original_img.dtype != np.uint8:
-                            original_for_blend = original_img.clip(0, 255).astype(np.uint8)
-                    
-                    # 确保两个数组类型完全一致
-                    print(f"混合前类型检查 - 增强图像: {output_rgb.dtype}, 原图: {original_for_blend.dtype}")
-                    
-                    # 强制转换为相同类型
-                    if output_rgb.dtype != original_for_blend.dtype:
-                        if original_for_blend.dtype == np.uint8:
-                            output_rgb = output_rgb.astype(np.uint8)
-                        else:
-                            original_for_blend = original_for_blend.astype(output_rgb.dtype)
-                    
-                    print(f"混合后类型检查 - 增强图像: {output_rgb.dtype}, 原图: {original_for_blend.dtype}")
-                    
-                    # 混合原图与增强结果，明确指定输出类型
-                    if output_rgb.dtype == np.uint8:
-                        result = cv2.addWeighted(
-                            output_rgb, self.enhancement_strength,
-                            original_for_blend, 1.0 - self.enhancement_strength,
-                            0, dtype=cv2.CV_8U
-                        )
-                    else:
-                        result = cv2.addWeighted(
-                            output_rgb, self.enhancement_strength,
-                            original_for_blend, 1.0 - self.enhancement_strength,
-                            0, dtype=cv2.CV_32F
-                        )
-                    
-                    # 保存最终结果
-                    try:
-                        result_path = os.path.join(debug_dir, "final_result.png")
-                        result_vis = result
-                        if np.max(result) <= 1.0:
-                            result_vis = (result * 255).clip(0, 255).astype(np.uint8)
-                        cv2.imwrite(result_path, cv2.cvtColor(result_vis, cv2.COLOR_RGB2BGR))
-                    except Exception as e:
-                        print(f"保存最终结果出错: {str(e)}")
-                    
-                    # 保存混合结果
-                    try:
-                        blended_path = os.path.join(debug_dir, "blended_result.png")
-                        blended_vis = result
-                        if np.max(result) <= 1.0:
-                            blended_vis = (result * 255).clip(0, 255).astype(np.uint8)
-                        cv2.imwrite(blended_path, cv2.cvtColor(blended_vis, cv2.COLOR_RGB2BGR))
-                    except Exception as e:
-                        print(f"保存混合结果出错: {str(e)}")
-                    
-                    # 应用嘴部保护如果需要
-                    if self.mouth_protection and face_landmarks is not None:
-                        # ...此处省略嘴部保护代码...
-                        pass
-                    
-                    print("GPEN增强完成")
-                    return result
-                except Exception as e:
-                    print(f"GPEN推理时出错: {str(e)}")
-                    traceback.print_exc()
-                    return original_img
-            
-            # 其他增强方法保持不变...
-            # ...此处省略其他增强方法代码...
-            return original_img
-            
+                print(f"[Debug] Raw model output: shape={output_arr.shape}, type={type(output_arr)}, min={np.min(output_arr)}, max={np.max(output_arr)}")
+                
+                if len(output_arr.shape) == 4:  # NCHW format
+                    output_arr = output_arr[0]  # Remove batch dimension
+                
+                # Transpose if needed (CHW -> HWC)
+                if output_arr.shape[0] == 3 and len(output_arr.shape) == 3:
+                    output_arr = output_arr.transpose(1, 2, 0)  # CHW -> HWC
+                
+                # 确保输出有3个颜色通道
+                if output_arr.shape[2] != 3:
+                    print(f"[Error] Output has incorrect number of channels: {output_arr.shape}")
+                    return img
+                
+                # 保存原始输出 (BGR格式)
+                output_debug = (output_arr * 255.0).clip(0, 255).astype(np.uint8) if np.max(output_arr) <= 1.0 else output_arr.clip(0, 255).astype(np.uint8)
+                cv2.imwrite(raw_output_path, output_debug)
+                print(f"[Debug] Saved raw model output (BGR), shape={output_debug.shape}")
+                
+                # GPEN输出是BGR格式，转换为RGB以返回
+                output_rgb = cv2.cvtColor(output_debug, cv2.COLOR_BGR2RGB)
+                transposed_output_path = os.path.join(debug_dir, "gpen_output_rgb.png")
+                cv2.imwrite(transposed_output_path, cv2.cvtColor(output_rgb, cv2.COLOR_RGB2BGR))  # 为了保存需要转回BGR
+                print(f"[Debug] Saved GPEN output (RGB), shape={output_rgb.shape}")
+                
+                # 将输出归一化到0-1范围，与输入保持一致
+                if np.max(img) <= 1.0:
+                    output_rgb = output_rgb.astype(np.float32) / 255.0
+                
+                return output_rgb
+            except Exception as e:
+                print(f"[Error] Failed to process model output: {e}")
+                traceback.print_exc()
+                return img
         except Exception as e:
-            print(f"增强过程中发生未捕获的错误: {str(e)}")
+            print(f"[Error] ONNX inference failed: {e}")
             traceback.print_exc()
-            return original_img if 'original_img' in locals() else img
+            return img
     
     def postprocess(self, img, output, face_landmarks=None):
         """

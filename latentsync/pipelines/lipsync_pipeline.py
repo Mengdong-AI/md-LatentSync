@@ -411,7 +411,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 # 保存人脸图像用于调试
                 face_debug_path = os.path.join(debug_dir, f"face_before_{i:04d}.png")
                 face_debug = (face * 255.0).clip(0, 255).astype(np.uint8) if np.max(face) <= 1.0 else face.clip(0, 255).astype(np.uint8)
-                cv2.imwrite(face_debug_path, cv2.cvtColor(face_debug, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(face_debug_path, face_debug)  # face已经是BGR格式，不需要颜色转换
                 
                 # 检查face的数据类型，确保数据类型一致性
                 if face.dtype != np.float32:
@@ -438,26 +438,26 @@ class LipsyncPipeline(DiffusionPipeline):
                 
                 # 保存处理后的人脸用于调试
                 face_converted_path = os.path.join(debug_dir, f"face_converted_{i:04d}.png")
-                cv2.imwrite(face_converted_path, cv2.cvtColor((face*255).astype(np.uint8), cv2.COLOR_RGB2BGR))
+                cv2.imwrite(face_converted_path, (face*255).astype(np.uint8) if np.max(face) <= 1.0 else face.astype(np.uint8))  # 不需要颜色空间转换
                 
                 # Resize face to 512x512 for enhancement if needed
                 if opt_face_enhancer is not None and opt_face_enhancer.enhancement_method:
                     try:
                         print(f"[帧{i}] 开始增强面部，原始尺寸: {face.shape}")
                         
-                        # 直接传递RGB格式的图像给增强器，让增强器内部处理颜色转换
-                        # 确保图像是RGB格式，因为face_enhancer的enhance方法期望RGB输入
-                        face_rgb = face
+                        # face已经是BGR格式，需要转换为RGB格式给增强器
+                        face_rgb = cv2.cvtColor((face*255).astype(np.uint8) if np.max(face) <= 1.0 else face.astype(np.uint8), cv2.COLOR_BGR2RGB)
+                        face_rgb = face_rgb.astype(np.float32) / 255.0 if np.max(face_rgb) > 1.0 else face_rgb.astype(np.float32)
                         
                         # 保存传递给增强器的图像用于调试
                         face_for_enhancer_path = os.path.join(debug_dir, f"face_for_enhancer_{i:04d}.png")
                         cv2.imwrite(face_for_enhancer_path, cv2.cvtColor((face_rgb*255).astype(np.uint8), cv2.COLOR_RGB2BGR))
                         
-                        # 调用面部增强，直接传入RGB格式图像
+                        # 调用面部增强，传入RGB格式图像
                         face_enhanced = opt_face_enhancer.enhance(face_rgb)
                         print(f"[帧{i}] 增强完成 - 形状: {face_enhanced.shape}, 类型: {face_enhanced.dtype}, 范围: [{np.min(face_enhanced) if face_enhanced.size > 0 else 'N/A'}, {np.max(face_enhanced) if face_enhanced.size > 0 else 'N/A'}]")
                         
-                        # 保存增强后的面部图像用于调试
+                        # 保存增强后的面部图像用于调试 - 增强返回的是RGB
                         debug_enhanced_path = os.path.join(debug_dir, f"enhanced_face_{i:04d}.png")
                         enhanced_debug = face_enhanced
                         if np.max(enhanced_debug) <= 1.0:
@@ -469,17 +469,17 @@ class LipsyncPipeline(DiffusionPipeline):
                             print(f"[帧{i}] 调整增强后图像大小以匹配原始尺寸: {face.shape[:2]}")
                             face_enhanced = cv2.resize(face_enhanced, (face.shape[1], face.shape[0]), interpolation=cv2.INTER_LANCZOS4)
                         
+                        # 将增强后的RGB图像转换回BGR格式以匹配原始face格式
+                        face_enhanced_bgr = cv2.cvtColor((face_enhanced*255).astype(np.uint8) if np.max(face_enhanced) <= 1.0 else face_enhanced.astype(np.uint8), cv2.COLOR_RGB2BGR)
+                        face_enhanced_bgr = face_enhanced_bgr.astype(np.float32) / 255.0 if np.max(face_enhanced_bgr) > 1.0 else face_enhanced_bgr.astype(np.float32)
+                        
                         # 确保数据类型一致
-                        if face.dtype != face_enhanced.dtype:
+                        if face.dtype != face_enhanced_bgr.dtype:
                             print(f"[帧{i}] 调整增强后图像类型以匹配原始类型: {face.dtype}")
-                            if np.max(face) <= 1.0 and np.max(face_enhanced) > 1.0:
-                                face_enhanced = face_enhanced / 255.0
-                            elif np.max(face) > 1.0 and np.max(face_enhanced) <= 1.0:
-                                face_enhanced = face_enhanced * 255.0
-                            face_enhanced = face_enhanced.astype(face.dtype)
+                            face_enhanced_bgr = face_enhanced_bgr.astype(face.dtype)
                         
                         # 使用增强后的面部替换原始面部
-                        face = face_enhanced
+                        face = face_enhanced_bgr
                         
                     except Exception as e:
                         print(f"[帧{i}] 面部增强过程出错: {str(e)}")
