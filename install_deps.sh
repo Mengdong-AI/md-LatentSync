@@ -1,84 +1,86 @@
 #!/bin/bash
 
-# 创建安装不依赖交互的安装脚本
-cat > install_deps_auto.sh << 'EOF'
-#!/bin/bash
+# 设置颜色
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # 无颜色
 
-# 设置变量
-INSTALL_ENHANCERS=true  # 是否安装面部增强器模型
-INSTALL_CODEFORMER=false  # 是否安装CodeFormer
-INSTALL_GPEN=false  # 是否安装GPEN
-
-# 创建用于存放模型的目录
+# 创建目录
+echo -e "${GREEN}创建必要目录...${NC}"
 mkdir -p models/faceenhancer
+mkdir -p output
 
-# 安装基本依赖
-echo "正在安装基本依赖..."
+# 检查系统
+echo -e "${GREEN}检查系统环境...${NC}"
+OS=$(uname -s)
+if [ "$OS" = "Linux" ]; then
+    echo "检测到Linux系统"
+elif [ "$OS" = "Darwin" ]; then
+    echo "检测到MacOS系统"
+else
+    echo -e "${YELLOW}无法确定操作系统类型，假设为Windows${NC}"
+    OS="Windows"
+fi
+
+# 检查CUDA
+echo -e "${GREEN}检查CUDA环境...${NC}"
+if command -v nvcc &> /dev/null; then
+    CUDA_VERSION=$(nvcc --version | grep "release" | awk '{print $6}' | cut -c2-)
+    echo "检测到CUDA版本: $CUDA_VERSION"
+    HAS_CUDA=1
+elif [ -d "/usr/local/cuda" ]; then
+    echo "检测到CUDA目录，但无法确定版本"
+    HAS_CUDA=1
+else
+    echo -e "${YELLOW}未检测到CUDA，将安装CPU版本${NC}"
+    HAS_CUDA=0
+fi
+
+# 安装基础依赖
+echo -e "${GREEN}安装基础依赖...${NC}"
 pip install -r requirements.txt
 
-# 检查GFPGAN安装是否成功
-if python -c "import gfpgan" 2>/dev/null; then
-    echo "GFPGAN安装成功"
+# 安装ONNX运行时
+echo -e "${GREEN}安装ONNX Runtime...${NC}"
+if [ $HAS_CUDA -eq 1 ]; then
+    echo "安装ONNX Runtime GPU版本..."
+    pip install onnxruntime-gpu
 else
-    echo "GFPGAN安装失败，尝试手动安装..."
-    pip install git+https://github.com/TencentARC/GFPGAN.git --no-deps
-    pip install basicsr facexlib
+    echo "安装ONNX Runtime CPU版本..."
+    pip install onnxruntime
 fi
 
-if [ "$INSTALL_ENHANCERS" = true ]; then
-    # 下载GFPGAN模型
-    echo "正在下载GFPGAN模型..."
-    mkdir -p models/faceenhancer
-    if [ ! -f "models/faceenhancer/GFPGANv1.4.pth" ]; then
-        wget -O models/faceenhancer/GFPGANv1.4.pth https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth
-    else
-        echo "GFPGAN模型已存在，跳过下载"
-    fi
+# 检查并创建模型目录
+echo -e "${GREEN}检查模型目录...${NC}"
+MODEL_DIRS=(
+    "models/faceenhancer"
+)
 
-    if [ "$INSTALL_CODEFORMER" = true ]; then
-        echo "正在安装CodeFormer..."
-        if [ ! -d "CodeFormer" ]; then
-            git clone https://github.com/sczhou/CodeFormer.git
-            cd CodeFormer
-            pip install -r requirements.txt --no-deps
-            pip install scipy lpips einops timm
-            cd ..
-        else
-            echo "CodeFormer已存在，跳过克隆"
-        fi
-        
-        if [ ! -f "models/faceenhancer/codeformer.pth" ]; then
-            wget -O models/faceenhancer/codeformer.pth https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth
-        else
-            echo "CodeFormer模型已存在，跳过下载"
-        fi
+for DIR in "${MODEL_DIRS[@]}"; do
+    if [ ! -d "$DIR" ]; then
+        echo "创建目录: $DIR"
+        mkdir -p "$DIR"
     fi
-    
-    if [ "$INSTALL_GPEN" = true ]; then
-        echo "正在安装GPEN..."
-        if [ ! -d "GPEN" ]; then
-            git clone https://github.com/yangxy/GPEN.git
-            cd GPEN
-            pip install -r requirements.txt --no-deps
-            cd ..
-        else
-            echo "GPEN已存在，跳过克隆"
-        fi
-        
-        if [ ! -f "models/faceenhancer/GPEN-BFR-512.pth" ]; then
-            wget -O models/faceenhancer/GPEN-BFR-512.pth https://public-vigen-video.oss-cn-shanghai.aliyuncs.com/robin/models/GPEN-BFR-512.pth
-        else
-            echo "GPEN模型已存在，跳过下载"
-        fi
-    fi
-    
-    echo "面部增强模型安装完成!"
-else
-    echo "跳过安装面部增强模型"
-fi
+done
 
-echo "所有依赖安装完成!"
-EOF
+# 添加ONNX模型说明
+echo -e "${YELLOW}请将以下ONNX模型文件放置在对应目录:${NC}"
+echo "- models/faceenhancer/GFPGANv1.4.onnx (GFPGAN模型)"
+echo "- models/faceenhancer/codeformer.onnx (CodeFormer模型)"
+echo "- models/faceenhancer/GPEN-BFR-512.onnx (GPEN模型)"
+echo -e "${YELLOW}如需了解更多信息，请参考 docs/face_enhancer_onnx.md${NC}"
 
-chmod +x install_deps_auto.sh
-echo "已创建自动安装脚本 install_deps_auto.sh，您可以编辑该脚本自定义安装选项，然后执行它完成安装。" 
+# 最后的设置检查
+echo -e "${GREEN}依赖安装完成，进行最终检查...${NC}"
+
+# 检查torch是否正确安装
+python -c "import torch; print(f'PyTorch版本: {torch.__version__}')"
+python -c "import torch; print(f'CUDA可用: {torch.cuda.is_available()}')"
+
+# 检查onnxruntime是否正确安装
+python -c "import onnxruntime; print(f'ONNX Runtime版本: {onnxruntime.__version__}')"
+python -c "import onnxruntime; print(f'可用执行提供程序: {onnxruntime.get_available_providers()}')"
+
+echo -e "${GREEN}安装完成!${NC}"
+echo "如有任何问题，请查看文档或提交Issue。" 

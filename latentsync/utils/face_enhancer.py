@@ -1,439 +1,255 @@
 import os
 import cv2
-import torch
 import numpy as np
 from typing import Union, Optional, Tuple, List
 import warnings
+import onnxruntime
 
 class FaceEnhancer:
-    """面部增强器，支持GPEN、GFPGAN和CodeFormer三种增强方法"""
+    """人脸增强器，支持使用ONNX模型的GPEN，GFPGAN和CodeFormer三种增强方式"""
     
-    def __init__(
-        self, 
-        method: str = 'gfpgan',
-        enhancement_strength: float = 0.8,
-        upscale: int = 1,
-        device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
-        mouth_protection: bool = True,  # 默认启用嘴唇保护
-        mouth_protection_strength: float = 0.8,  # 嘴唇保护强度，0表示完全保留原始嘴唇，1表示完全使用增强嘴唇
-        model_path: Optional[str] = None,
-        enable: bool = True
-    ):
-        """
-        初始化面部增强器
+    def __init__(self, enhancement_method='gfpgan', model_path=None, device='cuda', enhancement_strength=0.5, 
+                 enable=True, mouth_protection=True, mouth_protection_strength=0.8):
+        """初始化人脸增强器
         
-        参数:
-            method (str): 增强方法，可选 'gpen', 'gfpgan', 'codeformer'
-            enhancement_strength (float): 增强强度，取值范围 [0, 1]
-            upscale (int): 上采样倍数，通常为1或2
-            device (str): 设备，'cuda'或'cpu'
-            mouth_protection (bool): 是否保护嘴唇区域，减少对唇形同步的影响
-            mouth_protection_strength (float): 嘴唇保护强度，取值范围 [0, 1]，0表示完全保留原始嘴唇
-            model_path (str, optional): 模型路径，如果不指定则使用默认路径
-            enable (bool): 是否启用面部增强
+        Args:
+            enhancement_method: 增强方法，支持'gpen', 'gfpgan'和'codeformer'
+            model_path: ONNX模型路径，默认为None，会使用默认路径
+            device: 设备，默认为'cuda'
+            enhancement_strength: 增强强度，默认为0.5
+            enable: 是否启用增强，默认为True
+            mouth_protection: 是否保护嘴唇区域，默认为True
+            mouth_protection_strength: 嘴唇保护强度，默认为0.8
         """
-        self.method = method.lower()
-        self.enhancement_strength = enhancement_strength
-        self.upscale = upscale
+        self.enhancement_method = enhancement_method.lower()
         self.device = device
-        self.mouth_protection = mouth_protection
-        self.mouth_protection_strength = max(0.0, min(1.0, mouth_protection_strength))
-        self.model = None
-        self.model_path = model_path
+        self.enhancement_strength = enhancement_strength
         self.enable = enable
+        self.mouth_protection = mouth_protection
+        self.mouth_protection_strength = mouth_protection_strength
         
-        if not self.enable:
-            print("面部增强已禁用")
-            return
-        
-        print(f"正在初始化面部增强器 - 方法: {method}, 强度: {enhancement_strength}")
-        print(f"嘴唇保护: {'已启用' if mouth_protection else '已禁用'}, 保护强度: {mouth_protection_strength}")
-        
-        # 确保当前目录存在模型文件夹
-        os.makedirs('models/faceenhancer', exist_ok=True)
-        
-        # 根据方法加载相应模型
-        if self.method == 'gfpgan':
-            self._load_gfpgan()
-        elif self.method == 'codeformer':
-            self._load_codeformer()
-        elif self.method == 'gpen':
-            self._load_gpen()
+        # 设置默认模型路径
+        if model_path is None:
+            if self.enhancement_method == 'gfpgan':
+                self.model_path = 'models/faceenhancer/GFPGANv1.4.onnx'
+            elif self.enhancement_method == 'codeformer':
+                self.model_path = 'models/faceenhancer/codeformer.onnx'
+            elif self.enhancement_method == 'gpen':
+                self.model_path = 'models/faceenhancer/GPEN-BFR-512.onnx'
+            else:
+                self.model_path = None
         else:
-            raise ValueError(f"不支持的增强方法: {method}，请选择 'gpen', 'gfpgan' 或 'codeformer'")
+            self.model_path = model_path
+        
+        # 尝试加载ONNX模型
+        self.session = None
+        if self.enable:
+            self._load_onnx_model()
     
-    def _load_gfpgan(self):
-        """加载GFPGAN模型"""
+    def _load_onnx_model(self):
+        """加载ONNX模型"""
         try:
-            from gfpgan import GFPGANer
-            
-            # 设定模型路径
-            if self.model_path is None:
-                self.model_path = 'models/faceenhancer/GFPGANv1.4.pth'
-                
-                # 如果模型不存在，打印下载说明
-                if not os.path.exists(self.model_path):
-                    print(f"GFPGAN模型不存在: {self.model_path}")
-                    print("请从 https://github.com/TencentARC/GFPGAN/releases 下载GFPGANv1.4.pth")
-                    print(f"并将其放置到 {self.model_path}")
-                    raise FileNotFoundError(f"GFPGAN模型不存在: {self.model_path}")
-            
-            # 初始化GFPGAN
-            self.model = GFPGANer(
-                model_path=self.model_path,
-                upscale=self.upscale,
-                arch='clean',
-                channel_multiplier=2,
-                bg_upsampler=None,
-                device=self.device
-            )
-            print("GFPGAN模型加载成功")
-            
-        except ImportError:
-            print("无法导入GFPGAN，尝试备选导入方式...")
-            try:
-                import sys
-                import os
-                # 检查是否有GFPGAN目录，如果有则添加到路径
-                if os.path.exists('GFPGAN'):
-                    sys.path.append('GFPGAN')
-                from gfpgan.gfpgan import GFPGANer
-                
-                # 设定模型路径
-                if self.model_path is None:
-                    self.model_path = 'models/faceenhancer/GFPGANv1.4.pth'
-                    
-                    # 如果模型不存在，打印下载说明
-                    if not os.path.exists(self.model_path):
-                        print(f"GFPGAN模型不存在: {self.model_path}")
-                        print("请从 https://github.com/TencentARC/GFPGAN/releases 下载GFPGANv1.4.pth")
-                        print(f"并将其放置到 {self.model_path}")
-                        raise FileNotFoundError(f"GFPGAN模型不存在: {self.model_path}")
-                
-                # 初始化GFPGAN
-                self.model = GFPGANer(
-                    model_path=self.model_path,
-                    upscale=self.upscale,
-                    arch='clean',
-                    channel_multiplier=2,
-                    bg_upsampler=None,
-                    device=self.device
-                )
-                print("GFPGAN模型加载成功（备选方法）")
-            except Exception as e:
-                print(f"无法导入GFPGAN: {str(e)}")
-                print("请安装相应的依赖: pip install git+https://github.com/TencentARC/GFPGAN.git")
-                self.enable = False
-    
-    def _load_codeformer(self):
-        """加载CodeFormer模型"""
-        try:
-            from codeformer.app import CodeFormerRestorer
-            
-            # 设定模型路径
-            if self.model_path is None:
-                self.model_path = 'models/faceenhancer/codeformer.pth'
-                
-                # 如果模型不存在，打印下载说明
-                if not os.path.exists(self.model_path):
-                    print(f"CodeFormer模型不存在: {self.model_path}")
-                    print("请从 https://github.com/sczhou/CodeFormer/releases 下载模型")
-                    print(f"并将其放置到 {self.model_path}")
-                    raise FileNotFoundError(f"CodeFormer模型不存在: {self.model_path}")
-            
-            # 初始化CodeFormer
-            self.model = CodeFormerRestorer(
-                model_path=self.model_path,
-                upscale=self.upscale,
-                device=self.device
-            )
-            print("CodeFormer模型加载成功")
-            
-        except ImportError:
-            print("无法导入CodeFormer，尝试备选导入方式...")
-            try:
-                import sys
-                # 检查是否有CodeFormer目录
-                if os.path.exists('CodeFormer'):
-                    sys.path.append('CodeFormer')
-                    from codeformer.basicsr.archs.codeformer_arch import CodeFormer
-                    from codeformer.basicsr.utils import img2tensor, tensor2img
-                    from codeformer.basicsr.utils.registry import ARCH_REGISTRY
-                    from torchvision.transforms.functional import normalize
-                    
-                    # 创建一个简单的包装类来模拟CodeFormerRestorer
-                    class SimpleCodeFormerRestorer:
-                        def __init__(self, model_path, upscale, device):
-                            self.device = device
-                            self.upscale = upscale
-                            self.model = ARCH_REGISTRY.get('CodeFormer')(
-                                dim_embd=512,
-                                codebook_size=1024,
-                                n_head=8,
-                                n_layers=9,
-                                connect_list=['32', '64', '128', '256']
-                            ).to(device)
-                            
-                            # 加载预训练模型
-                            checkpoint = torch.load(model_path, map_location=device)
-                            self.model.load_state_dict(checkpoint['params_ema'])
-                            self.model.eval()
-                            
-                        def restore(self, img, w=0.5, has_aligned=False, only_center_face=False):
-                            with torch.no_grad():
-                                # 预处理
-                                img_tensor = img2tensor(img, bgr2rgb=False, float32=True)
-                                normalize(img_tensor, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True)
-                                img_tensor = img_tensor.unsqueeze(0).to(self.device)
-                                
-                                # 模型推理
-                                output = self.model(img_tensor, w=w)
-                                
-                                # 后处理
-                                restored_img = tensor2img(output, rgb2bgr=False, min_max=(-1, 1))
-                                return restored_img
-                    
-                    # 设定模型路径
-                    if self.model_path is None:
-                        self.model_path = 'models/faceenhancer/codeformer.pth'
-                        
-                        # 如果模型不存在，打印下载说明
-                        if not os.path.exists(self.model_path):
-                            print(f"CodeFormer模型不存在: {self.model_path}")
-                            print("请从 https://github.com/sczhou/CodeFormer/releases 下载模型")
-                            print(f"并将其放置到 {self.model_path}")
-                            raise FileNotFoundError(f"CodeFormer模型不存在: {self.model_path}")
-                    
-                    # 初始化简单的CodeFormer包装类
-                    self.model = SimpleCodeFormerRestorer(
-                        model_path=self.model_path,
-                        upscale=self.upscale,
-                        device=self.device
-                    )
-                    print("CodeFormer模型加载成功（备选方法）")
-                else:
-                    raise ImportError("CodeFormer目录不存在，请克隆仓库: git clone https://github.com/sczhou/CodeFormer.git")
-            except Exception as e:
-                print(f"无法导入CodeFormer: {str(e)}")
-                print("请安装相应的依赖")
-                self.enable = False
-    
-    def _load_gpen(self):
-        """加载GPEN模型"""
-        try:
-            import sys
-            import os
-            
             # 检查模型文件是否存在
-            if self.model_path is None:
-                self.model_path = 'models/faceenhancer/GPEN-BFR-512.pth'
-                
-                # 如果模型不存在，打印下载说明
-                if not os.path.exists(self.model_path):
-                    print(f"GPEN模型不存在: {self.model_path}")
-                    print("请从 https://github.com/yangxy/GPEN/releases 下载模型")
-                    print(f"并将其放置到 {self.model_path}")
-                    raise FileNotFoundError(f"GPEN模型不存在: {self.model_path}")
+            if not os.path.exists(self.model_path):
+                print(f"ONNX模型不存在: {self.model_path}")
+                print(f"请确保ONNX模型文件已放置到正确位置")
+                self.enable = False
+                return
+
+            # 配置ONNX运行时选项
+            session_options = onnxruntime.SessionOptions()
+            session_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
             
-            # 直接实现简单的 GPEN 处理类
-            class SimpleGPEN:
-                def __init__(self, model_path, size=512, device='cuda'):
-                    self.model_path = model_path
-                    self.size = size
-                    self.device = device
-                    print(f"初始化GPEN模型: {model_path}, 尺寸: {size}, 设备: {device}")
-                    # 在实际使用时才导入依赖模块并加载模型
-                
-                def process(self, img):
-                    """处理图像"""
-                    # 由于没有实际的GPEN模型，这里先返回原图
-                    print(f"注意: GPEN模型尚未实际加载，返回原始图像")
-                    return img
+            # 根据设备选择执行提供程序
+            providers = ["CPUExecutionProvider"]
+            if self.device.lower() == 'cuda':
+                providers = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "DEFAULT"}), "CPUExecutionProvider"]
             
-            # 初始化简单GPEN类
-            self.model = SimpleGPEN(
-                model_path=self.model_path,
-                size=512,
-                device=self.device
+            # 创建ONNX会话
+            self.session = onnxruntime.InferenceSession(
+                self.model_path, 
+                sess_options=session_options, 
+                providers=providers
             )
-            print("GPEN模型准备就绪（简化版）")
-            print("注意：当前实现将返回未增强的原始图像")
+            
+            # 获取模型的输入尺寸
+            self.input_name = self.session.get_inputs()[0].name
+            input_shape = self.session.get_inputs()[0].shape
+            if len(input_shape) >= 4:  # [batch, channels, height, width]
+                self.resolution = (input_shape[-1], input_shape[-2])
+            else:
+                # 使用默认分辨率
+                self.resolution = (512, 512)
+                
+            print(f"{self.enhancement_method.upper()} ONNX模型加载成功，输入尺寸: {self.resolution}")
             
         except Exception as e:
-            print(f"加载GPEN模型失败: {str(e)}")
-            print("GPEN增强器将返回未处理的原始图像")
-            self.model = None
+            print(f"加载ONNX模型失败: {str(e)}")
+            self.session = None
             self.enable = False
     
-    def enhance(self, img: np.ndarray, landmarks: Optional[np.ndarray] = None) -> np.ndarray:
-        """
-        增强面部图像
+    def preprocess(self, img):
+        """预处理图像
         
-        参数:
-            img (np.ndarray): 输入BGR格式图像
-            landmarks (np.ndarray, optional): 面部关键点，用于嘴唇保护
+        Args:
+            img: 输入图像，BGR格式
             
-        返回:
-            np.ndarray: 增强后的图像
+        Returns:
+            预处理后的图像和原始大小的图像
         """
-        if not self.enable or self.model is None:
+        # 保存原始图像大小
+        self.original_height, self.original_width = img.shape[:2]
+        
+        # 保存原始图像的副本以便后处理
+        self.original_img = cv2.resize(img.copy(), self.resolution, interpolation=cv2.INTER_LINEAR)
+        
+        # 调整图像大小以匹配模型输入尺寸
+        img_resized = cv2.resize(img, self.resolution, interpolation=cv2.INTER_LINEAR)
+        
+        # 转换为浮点型并标准化
+        img_norm = img_resized.astype(np.float32)[:,:,::-1] / 255.0  # BGR -> RGB, normalize to [0, 1]
+        
+        # 转换为NCHW格式
+        img_transposed = img_norm.transpose((2, 0, 1))  # HWC -> CHW
+        
+        # 标准化到[-1, 1]范围
+        img_normalized = (img_transposed - 0.5) / 0.5
+        
+        # 添加批次维度
+        img_batch = np.expand_dims(img_normalized, axis=0).astype(np.float32)
+        
+        return img_batch
+    
+    def postprocess(self, img):
+        """后处理ONNX模型输出
+        
+        Args:
+            img: 模型输出，NCHW格式，范围[-1, 1]
+            
+        Returns:
+            处理后的BGR图像，范围[0, 255]，uint8类型
+        """
+        # 如果输出是4D张量(NCHW)，去掉批次维度
+        if len(img.shape) == 4:
+            img = img[0]
+        
+        # 从CHW转换回HWC
+        img = img.transpose(1, 2, 0)
+        
+        # 从[-1, 1]转换回[0, 1]
+        img = (img + 1) * 0.5
+        
+        # 从[0, 1]转换回[0, 255]并从RGB转换回BGR
+        img = (img * 255.0)[:, :, ::-1]
+        
+        # 裁剪到[0, 255]范围并转换为uint8
+        img = np.clip(img, 0, 255).astype('uint8')
+        
+        # 调整回原始图像大小
+        img = cv2.resize(img, (self.original_width, self.original_height), interpolation=cv2.INTER_LANCZOS4)
+        
+        return img
+    
+    def enhance(self, img: np.ndarray, face_landmarks=None) -> np.ndarray:
+        """增强图像
+        
+        Args:
+            img: 输入图像，BGR格式
+            face_landmarks: 人脸关键点，用于保护嘴唇区域，可选
+            
+        Returns:
+            增强后的图像
+        """
+        # 如果未启用或模型为空，返回原图
+        if not self.enable or self.session is None:
             return img
         
-        # 保存原始尺寸用于后续恢复
-        original_height, original_width = img.shape[:2]
+        # 拷贝图像以避免修改原图
+        img = img.copy()
         
-        # 预处理图像 - 确保是BGR格式并且是uint8类型
-        processed_img = img.copy()
-        if processed_img.dtype != np.uint8:
-            processed_img = (np.clip(processed_img, 0, 1) * 255).astype(np.uint8)
-        
-        # 分离嘴唇区域（如果启用了嘴唇保护并提供了关键点）
-        mouth_mask = None
-        lips_img = None
-        if self.mouth_protection and landmarks is not None:
-            mouth_mask = self._create_mouth_mask(processed_img, landmarks)
-            lips_img = cv2.bitwise_and(processed_img, processed_img, mask=mouth_mask)
-        elif self.mouth_protection:
-            # 如果启用了嘴唇保护但没有提供关键点，则使用简单的固定区域作为嘴唇区域
-            h, w = processed_img.shape[:2]
-            mouth_mask = np.zeros((h, w), dtype=np.uint8)
-            # 估计嘴唇位置在下半部分中间区域
-            mouth_top = int(h * 0.6)
-            mouth_bottom = int(h * 0.85)
-            mouth_left = int(w * 0.3)
-            mouth_right = int(w * 0.7)
-            # 填充嘴唇区域
-            mouth_mask[mouth_top:mouth_bottom, mouth_left:mouth_right] = 255
-            # 平滑过渡边缘
-            mouth_mask = cv2.GaussianBlur(mouth_mask, (31, 31), 0)
-            lips_img = cv2.bitwise_and(processed_img, processed_img, mask=mouth_mask)
-            
-        # 根据不同方法进行增强
-        if self.method == 'gfpgan':
-            enhanced_img = self._enhance_with_gfpgan(processed_img)
-        elif self.method == 'codeformer':
-            enhanced_img = self._enhance_with_codeformer(processed_img)
-        elif self.method == 'gpen':
-            enhanced_img = self._enhance_with_gpen(processed_img)
-        else:
-            enhanced_img = processed_img  # 如果方法无效，返回原始图像
-        
-        # 确保增强后的图像与输入尺寸一致
-        if enhanced_img.shape[:2] != (original_height, original_width):
-            enhanced_img = cv2.resize(
-                enhanced_img,
-                (original_width, original_height),
-                interpolation=cv2.INTER_LANCZOS4
-            )
-        
-        # 根据增强强度混合原始图像和增强图像
-        if self.enhancement_strength < 1.0:
-            enhanced_img = cv2.addWeighted(
-                processed_img, 1 - self.enhancement_strength,
-                enhanced_img, self.enhancement_strength,
-                0
-            )
-        
-        # 恢复嘴唇区域（如果启用了嘴唇保护）
-        if self.mouth_protection and lips_img is not None and mouth_mask is not None:
-            # 对嘴唇区域应用平滑过渡
-            # 根据嘴唇保护强度调整混合比例
-            if mouth_mask.max() > 1.0:  # 如果是0-255范围
-                mouth_mask = mouth_mask / 255.0
-            
-            # 当mouth_protection_strength=0时，完全保留原始嘴唇
-            # 当mouth_protection_strength=1时，完全使用增强后的嘴唇
-            if self.mouth_protection_strength > 0:
-                mouth_mask = mouth_mask * (1.0 - self.mouth_protection_strength)
-            
-            # 混合嘴唇区域
-            blended = enhanced_img.copy().astype(np.float32)
-            for c in range(3):  # 对每个颜色通道
-                blended[:,:,c] = enhanced_img[:,:,c] * (1 - mouth_mask) + processed_img[:,:,c] * mouth_mask
-            
-            enhanced_img = blended.astype(np.uint8)
-        
-        return enhanced_img
-    
-    def _enhance_with_gfpgan(self, img: np.ndarray) -> np.ndarray:
-        """使用GFPGAN增强图像"""
         try:
-            # 确保输入是BGR格式的uint8图像
-            input_img = img.copy()
+            # 预处理图像
+            input_data = self.preprocess(img)
             
-            # GFPGAN处理
-            _, _, enhanced_img = self.model.enhance(
-                input_img,
-                has_aligned=False,
-                only_center_face=False,
-                paste_back=True
-            )
+            # 运行ONNX推理
+            output = self.session.run(None, {self.input_name: input_data})[0]
+            
+            # 后处理输出
+            enhanced_img = self.postprocess(output)
+            
+            # 根据增强强度混合原图和增强结果
+            if self.enhancement_strength < 1.0:
+                # 调整原图大小以匹配增强结果
+                original_resized = cv2.resize(img, (enhanced_img.shape[1], enhanced_img.shape[0]), 
+                                             interpolation=cv2.INTER_LANCZOS4)
+                enhanced_img = cv2.addWeighted(enhanced_img, self.enhancement_strength, 
+                                              original_resized, 1.0 - self.enhancement_strength, 0)
+            
+            # 如果启用嘴唇保护并有人脸关键点，保留原始嘴唇区域
+            if self.mouth_protection and face_landmarks is not None and len(face_landmarks) > 0:
+                try:
+                    # 创建嘴唇区域遮罩
+                    mask = np.zeros_like(enhanced_img)
+                    
+                    # 对每个人脸
+                    for landmarks in face_landmarks:
+                        # 获取嘴唇关键点（通常是最后的点）
+                        try:
+                            # 对于68点模型，嘴唇点是48-68
+                            if len(landmarks) >= 68:
+                                mouth_points = landmarks[48:68]
+                            # 如果是简化的关键点模型
+                            elif len(landmarks) >= 20:
+                                mouth_points = landmarks[-8:]  # 取最后8个点作为嘴唇
+                            else:
+                                # 使用固定区域
+                                h, w = enhanced_img.shape[:2]
+                                mouth_points = np.array([
+                                    [w//2 - w//8, h//2 + h//8],
+                                    [w//2 + w//8, h//2 + h//8],
+                                    [w//2 + w//8, h//2 + h//4],
+                                    [w//2 - w//8, h//2 + h//4]
+                                ])
+                        except:
+                            # 如果出错，使用固定区域
+                            h, w = enhanced_img.shape[:2]
+                            mouth_points = np.array([
+                                [w//2 - w//8, h//2 + h//8],
+                                [w//2 + w//8, h//2 + h//8],
+                                [w//2 + w//8, h//2 + h//4],
+                                [w//2 - w//8, h//2 + h//4]
+                            ])
+                        
+                        # 创建嘴唇区域多边形
+                        cv2.fillPoly(mask, [np.array(mouth_points, dtype=np.int32)], (255, 255, 255))
+                        
+                        # 扩大嘴唇区域
+                        kernel = np.ones((15, 15), np.uint8)
+                        mask = cv2.dilate(mask, kernel, iterations=1)
+                    
+                    # 应用遮罩，保留原始嘴唇区域
+                    # 缩放原始图像以匹配增强后的图像大小
+                    original_resized = cv2.resize(img, (enhanced_img.shape[1], enhanced_img.shape[0]), 
+                                                interpolation=cv2.INTER_LANCZOS4)
+                    
+                    # 创建嘴唇保护混合
+                    if self.mouth_protection_strength < 1.0:
+                        # 部分保护，混合原始和增强的嘴唇区域
+                        mask_float = mask.astype(np.float32) / 255.0
+                        mask_strength = mask_float * self.mouth_protection_strength
+                        for c in range(3):
+                            enhanced_img[:,:,c] = (1 - mask_strength[:,:,c]) * enhanced_img[:,:,c] + \
+                                                 mask_strength[:,:,c] * original_resized[:,:,c]
+                    else:
+                        # 完全保护，直接替换
+                        mask = mask.astype(bool)
+                        enhanced_img[mask] = original_resized[mask]
+                
+                except Exception as e:
+                    print(f"应用嘴唇保护时出错: {str(e)}")
             
             return enhanced_img
             
         except Exception as e:
-            print(f"GFPGAN增强过程出错: {str(e)}")
-            return img
-    
-    def _enhance_with_codeformer(self, img: np.ndarray) -> np.ndarray:
-        """使用CodeFormer增强图像"""
-        try:
-            # 根据实际的CodeFormer API调整
-            enhanced_img = self.model.restore(
-                img,
-                w=self.enhancement_strength,  # CodeFormer特有的权重参数
-                has_aligned=False,
-                only_center_face=False
-            )
-            
-            return enhanced_img
-            
-        except Exception as e:
-            print(f"CodeFormer增强过程出错: {str(e)}")
-            return img
-    
-    def _enhance_with_gpen(self, img: np.ndarray) -> np.ndarray:
-        """使用GPEN增强图像"""
-        if self.model is None:
-            return img
-            
-        try:
-            # 尝试使用GPEN处理图像
-            enhanced_img = self.model.process(img)
-            if enhanced_img is None or enhanced_img.shape != img.shape:
-                print("GPEN处理返回无效图像，返回原始图像")
-                return img
-            return enhanced_img
-            
-        except Exception as e:
-            print(f"GPEN增强过程出错: {str(e)}")
-            return img
-    
-    def _create_mouth_mask(self, img: np.ndarray, landmarks: np.ndarray) -> np.ndarray:
-        """
-        创建嘴唇区域的掩码
-        
-        参数:
-            img (np.ndarray): 输入图像
-            landmarks (np.ndarray): 面部关键点
-            
-        返回:
-            np.ndarray: 嘴唇区域的掩码
-        """
-        height, width = img.shape[:2]
-        mask = np.zeros((height, width), dtype=np.uint8)
-        
-        # 假设landmarks包含面部68个关键点，其中49-68是嘴唇区域
-        # 根据实际关键点格式调整索引
-        try:
-            mouth_pts = landmarks[48:68].astype(np.int32)
-            cv2.fillPoly(mask, [mouth_pts], 255)
-            
-            # 扩大嘴唇区域，确保完全覆盖
-            mask = cv2.dilate(mask, np.ones((10, 10), np.uint8), iterations=1)
-        except Exception as e:
-            print(f"创建嘴唇掩码出错: {str(e)}")
-            # 如果出错，返回空掩码
-            pass
-        
-        return mask 
+            print(f"面部增强过程出错: {str(e)}")
+            return img 

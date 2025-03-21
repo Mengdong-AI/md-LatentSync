@@ -18,17 +18,17 @@ lpips==0.1.4
 face-alignment==1.4.1
 gradio==5.12.0
 numpy==1.26.4
-# 面部增强相关依赖 - 修改为直接安装源码版本以避免依赖冲突
-facexlib>=0.3.0
-basicsr>=1.4.2
-# gfpgan>=1.3.8  # 替换为下面的方式
-git+https://github.com/TencentARC/GFPGAN.git
+# 添加ONNX运行时支持
+onnxruntime-gpu==1.16.3
+# 移除面部增强相关依赖，因为现在使用ONNX模型
+# facexlib>=0.3.0
+# basicsr-ext>=1.0.0
+# git+https://github.com/TencentARC/GFPGAN.git
 
-# CodeFormer 和 GPEN 需要手动克隆安装，而不是通过 pip
-# 以下是它们的依赖项
+# 以下是基础依赖
 lmdb>=1.0.0
 scipy>=1.7.0
-tb-nightly
+# tensorboard>=2.12.0  # 移除，避免依赖问题
 yapf
 realesrgan>=0.3.0
 addict
@@ -38,6 +38,6 @@ PyYAML
 scikit-image
 timm
 
-# 以下内容已注释，需要手动克隆安装
+# 不再需要以下库，使用ONNX模型代替
 # git+https://github.com/sczhou/CodeFormer.git
 # git+https://github.com/yangxy/GPEN.git

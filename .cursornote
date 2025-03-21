@@ -15,6 +15,7 @@ MD-LatentSync 是基于 LatentSync 的唇形同步系统的增强版本，主要
    - `ImageProcessor` 类负责图像的预处理和后处理
    - `AlignRestore` 类（在 `affine_transform.py` 中）负责面部对齐和恢复
    - `FaceEnhancer` 类提供面部增强功能，支持多种增强方法
+   - 面部增强现支持ONNX模型，简化依赖并提高性能
 
 3. **音频处理模块**:
    - 使用 Whisper 模型提取音频特征
@@ -57,8 +58,10 @@ MD-LatentSync 是基于 LatentSync 的唇形同步系统的增强版本，主要
 
 2. **面部增强功能**:
    - 集成多种面部增强方法（GFPGAN、CodeFormer、GPEN 等）
+   - 全部使用ONNX模型进行优化，降低依赖复杂度
    - 支持基础图像处理方法（锐化、CLAHE、细节增强等）
    - 嘴唇区域保护功能，确保唇形同步效果不受影响
+   - 可配置的增强强度和嘴唇保护强度
 
 ## 代码风格
 
@@ -78,4 +81,5 @@ MD-LatentSync 是基于 LatentSync 的唇形同步系统的增强版本，主要
 
 - 依赖 PyTorch、OpenCV、FFMPEG 等库
 - 支持 GPU 加速（CUDA）
-- 面部增强模型可选择性安装 
+- 面部增强使用ONNX模型，需要onnxruntime-gpu
+- 主要模型文件存放在models目录下 

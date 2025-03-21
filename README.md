@@ -367,3 +367,33 @@ vi config/default.yaml
   year={2023}
 }
 ```
+
+## 高级特性
+
+### 面部增强 (ONNX版本)
+
+为简化依赖并提高性能，MD-LatentSync现在支持使用ONNX格式的面部增强模型。这需要将相应的ONNX模型文件放置在正确位置：
+
+```
+models/faceenhancer/GFPGANv1.4.onnx     # GFPGAN模型
+models/faceenhancer/codeformer.onnx     # CodeFormer模型
+models/faceenhancer/GPEN-BFR-512.onnx   # GPEN模型
+```
+
+详细说明和模型转换指南请参考 [docs/face_enhancer_onnx.md](docs/face_enhancer_onnx.md)。
+
+要在运行时启用面部增强，使用以下参数：
+
+```bash
+python predict.py \
+  --video_path input.mp4 \
+  --audio_path input.wav \
+  --face_enhance True \
+  --face_enhance_method gfpgan \  # 'gfpgan', 'codeformer'或'gpen'
+  --face_enhance_strength 0.8     # 增强强度 (0.0-1.0)
+```
+
+使用ONNX模型的好处：
+- 依赖更少：不再需要安装原始模型框架
+- 性能更佳：ONNX Runtime针对推理进行了优化
+- 部署更简单：标准化的跨平台格式
