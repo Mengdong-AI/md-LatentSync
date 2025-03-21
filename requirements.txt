@@ -23,6 +23,21 @@ facexlib>=0.3.0
 basicsr>=1.4.2
 # gfpgan>=1.3.8  # 替换为下面的方式
 git+https://github.com/TencentARC/GFPGAN.git
-# 如果要使用CodeFormer和GPEN，取消下面的注释并安装
+
+# CodeFormer 和 GPEN 需要手动克隆安装，而不是通过 pip
+# 以下是它们的依赖项
+lmdb>=1.0.0
+scipy>=1.7.0
+tb-nightly
+yapf
+realesrgan>=0.3.0
+addict
+future
+filterpy
+PyYAML
+scikit-image
+timm
+
+# 以下内容已注释，需要手动克隆安装
 # git+https://github.com/sczhou/CodeFormer.git
 # git+https://github.com/yangxy/GPEN.git

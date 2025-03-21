@@ -287,7 +287,35 @@ class LipsyncPipeline(DiffusionPipeline):
         
         # Get original shapes
         original_frames = vr[:]  # [T, H, W, C]
-        original_h, original_w = original_frames.shape[1:3]
+        
+        # 检查 original_frames 是否为可索引对象
+        if not hasattr(original_frames, "__getitem__"):
+            print(f"Warning: Cannot index original_frames, converting to numpy array")
+            try:
+                original_frames = original_frames.asnumpy() if hasattr(original_frames, "asnumpy") else np.array(original_frames)
+            except:
+                print(f"Error: Failed to convert original_frames to indexable object")
+                # 如果转换失败，创建一个空帧列表
+                original_frames = []
+        
+        # 如果 original_frames 为空或无法索引，使用 faces 创建一个空背景
+        if len(original_frames) == 0:
+            print(f"Warning: No original frames loaded, creating blank background")
+            # 从第一个 face 获取尺寸信息
+            face_h, face_w = faces[0, 0].shape[1:3] 
+            # 创建一个黑色背景帧列表
+            original_frames = [np.zeros((face_h*2, face_w*2, 3), dtype=np.uint8) for _ in range(min(len(faces), total_frames))]
+        
+        # 获取原始视频的高度和宽度
+        if len(original_frames) > 0:
+            if isinstance(original_frames, list):
+                original_h, original_w = original_frames[0].shape[:2]
+            else:
+                original_h, original_w = original_frames.shape[1:3]
+        else:
+            # 如果没有原始帧，使用面部尺寸的2倍作为原始尺寸
+            face_h, face_w = faces[0, 0].shape[1:3]
+            original_h, original_w = face_h*2, face_w*2
         
         # Initialize output frames
         output_frames = []
@@ -296,11 +324,14 @@ class LipsyncPipeline(DiffusionPipeline):
         for i in range(min(len(faces), total_frames)):
             try:
                 # Get current frame
-                if i < len(original_frames):
-                    ori_frame = original_frames[i].copy()  # [H, W, C]
+                if len(original_frames) > 0:
+                    if isinstance(original_frames, list):
+                        ori_frame = original_frames[min(i, len(original_frames)-1)].copy()
+                    else:
+                        ori_frame = original_frames[min(i, len(original_frames)-1)].copy() if hasattr(original_frames, "copy") else np.array(original_frames[min(i, len(original_frames)-1)])
                 else:
-                    # 如果超出原始视频帧数，使用最后一帧
-                    ori_frame = original_frames[-1].copy()
+                    # 如果没有原始帧，创建黑色背景
+                    ori_frame = np.zeros((original_h, original_w, 3), dtype=np.uint8)
                 
                 # Convert to BGR for OpenCV processing
                 ori_frame_bgr = cv2.cvtColor(ori_frame, cv2.COLOR_RGB2BGR)
@@ -352,8 +383,26 @@ class LipsyncPipeline(DiffusionPipeline):
             
             except Exception as e:
                 print(f"Error processing frame {i}: {e}")
-                # If error, use original frame
-                output_frames.append(ori_frame)
+                # If error, try to use original frame or create a blank one
+                try:
+                    if len(original_frames) > 0 and i < len(original_frames):
+                        if isinstance(original_frames, list):
+                            output_frames.append(original_frames[i])
+                        else:
+                            output_frames.append(np.array(original_frames[i]))
+                    else:
+                        # 创建空白帧
+                        blank_frame = np.zeros((original_h, original_w, 3), dtype=np.uint8)
+                        output_frames.append(blank_frame)
+                except Exception as e2:
+                    print(f"Error creating fallback frame: {e2}")
+                    # 最后的备用方案：创建一个小的空白帧
+                    output_frames.append(np.zeros((256, 256, 3), dtype=np.uint8))
+        
+        # 确保至少有一帧
+        if len(output_frames) == 0:
+            print("Warning: No frames processed, creating a blank frame")
+            output_frames = [np.zeros((original_h, original_w, 3), dtype=np.uint8)]
         
         # Stack frames
         output_frames = np.stack(output_frames, axis=0)
