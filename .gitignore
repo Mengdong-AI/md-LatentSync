@@ -48,4 +48,4 @@ wandb/
 !/assets/*
 !/docs/*
 !/internal/*.png
-.history/*
+.history/

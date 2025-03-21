@@ -33,7 +33,7 @@ class FaceEnhancer:
             if self.enhancement_method == 'gfpgan':
                 self.model_path = 'models/faceenhancer/GFPGANv1.4.onnx'
             elif self.enhancement_method == 'codeformer':
-                self.model_path = 'models/faceenhancer/codeformer.onnx'
+                self.model_path = 'models/faceenhancer/CodeFormerFixed.onnx'
             elif self.enhancement_method == 'gpen':
                 self.model_path = 'models/faceenhancer/GPEN-BFR-512.onnx'
             else:

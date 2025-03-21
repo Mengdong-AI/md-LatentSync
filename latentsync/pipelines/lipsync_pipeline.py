@@ -514,8 +514,10 @@ class LipsyncPipeline(DiffusionPipeline):
         self.face_enhancer = None
         if face_enhance:
             self.face_enhancer = FaceEnhancer(
+                enhancement_method=face_enhance_method,
                 enhancement_strength=face_enhance_strength,
-                method=face_enhance_method,
+                device=device,
+                enable=True,
                 mouth_protection=mouth_protection,
                 mouth_protection_strength=mouth_protection_strength
             )
