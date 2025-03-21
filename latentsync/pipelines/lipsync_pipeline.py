@@ -362,9 +362,27 @@ class LipsyncPipeline(DiffusionPipeline):
                 
                 # Resize face to 512x512 for enhancement if needed
                 if opt_face_enhancer is not None and opt_face_enhancer.enable:
-                    face_enhanced = cv2.resize(face_bgr, (512, 512), interpolation=cv2.INTER_LANCZOS4)
-                    face_enhanced = opt_face_enhancer.enhance(face_enhanced)
-                    face_bgr = cv2.resize(face_enhanced, (face_bgr.shape[1], face_bgr.shape[0]), interpolation=cv2.INTER_LANCZOS4)
+                    try:
+                        print(f"[帧{i}] 开始增强面部，原始尺寸: {face_bgr.shape}")
+                        face_enhanced = cv2.resize(face_bgr, (512, 512), interpolation=cv2.INTER_LANCZOS4)
+                        print(f"[帧{i}] 缩放到512x512后 - 形状: {face_enhanced.shape}, 类型: {face_enhanced.dtype}, 范围: [{np.min(face_enhanced) if face_enhanced.size > 0 else 'N/A'}, {np.max(face_enhanced) if face_enhanced.size > 0 else 'N/A'}]")
+                        
+                        # 检查面部图像是否有效
+                        if face_enhanced.size == 0 or np.all(face_enhanced == 0):
+                            print(f"[帧{i}] 警告: 面部图像全为零或大小为0")
+                            face_bgr = cv2.resize(face_bgr, (face_bgr.shape[1], face_bgr.shape[0]), interpolation=cv2.INTER_LANCZOS4)
+                        else:
+                            # 调用面部增强
+                            face_enhanced = opt_face_enhancer.enhance(face_enhanced)
+                            print(f"[帧{i}] 增强完成 - 形状: {face_enhanced.shape}, 类型: {face_enhanced.dtype}, 范围: [{np.min(face_enhanced) if face_enhanced.size > 0 else 'N/A'}, {np.max(face_enhanced) if face_enhanced.size > 0 else 'N/A'}]")
+                            
+                            # 调整回原始尺寸
+                            face_bgr = cv2.resize(face_enhanced, (face_bgr.shape[1], face_bgr.shape[0]), interpolation=cv2.INTER_LANCZOS4)
+                            print(f"[帧{i}] 缩放回原始尺寸后 - 形状: {face_bgr.shape}")
+                    except Exception as e:
+                        print(f"[帧{i}] 面部增强过程出错: {str(e)}")
+                        # 如果增强失败，保持原样
+                        pass
                 
                 # Compute inverse affine matrix
                 inv_affine_matrix = cv2.invertAffineTransform(affine_matrix)
