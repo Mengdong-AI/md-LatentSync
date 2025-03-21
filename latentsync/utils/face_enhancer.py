@@ -177,14 +177,14 @@ class FaceEnhancer:
                 # 调整大小到模型分辨率
                 img_resized = cv2.resize(img, self.resolution, interpolation=cv2.INTER_LINEAR)
                 
-                # RGB转BGR并归一化到[0,1]
-                img_bgr = img_resized[:,:,::-1].astype(np.float32) / 255.0
+                # 明确使用cvtColor将RGB转BGR而非手动交换通道
+                img_bgr = cv2.cvtColor(img_resized, cv2.COLOR_RGB2BGR).astype(np.float32) / 255.0
                 
                 # 保存预处理后图像用于调试
                 try:
                     preproc_path = os.path.join(debug_dir, "preprocessed.png")
-                    preproc_vis = (img_bgr[:,:,::-1] * 255).astype(np.uint8)  # 转回RGB用于显示
-                    cv2.imwrite(preproc_path, cv2.cvtColor(preproc_vis, cv2.COLOR_RGB2BGR))
+                    preproc_vis = (img_bgr * 255).astype(np.uint8) 
+                    cv2.imwrite(preproc_path, preproc_vis)  # 已经是BGR格式，不需要转换
                 except Exception as e:
                     print(f"保存预处理图像出错: {str(e)}")
                 
@@ -200,13 +200,12 @@ class FaceEnhancer:
                 # 保存GPEN输入
                 try:
                     gpen_input_path = os.path.join(debug_dir, "gpen_input.png")
-                    gpen_input_vis = ((img_norm.transpose(1, 2, 0) + 1) / 2)
-                    gpen_input_vis = (gpen_input_vis[:,:,::-1] * 255).astype(np.uint8)  # BGR转RGB并缩放到255
-                    cv2.imwrite(gpen_input_path, gpen_input_vis)
+                    gpen_input_vis = ((img_norm.transpose(1, 2, 0) + 1) / 2 * 255).astype(np.uint8)
+                    cv2.imwrite(gpen_input_path, gpen_input_vis)  # 已经是BGR格式
                 except Exception as e:
                     print(f"保存GPEN输入出错: {str(e)}")
                 
-                print(f"GPEN预处理完成，输入形状: {img_batch.shape}")
+                print(f"GPEN预处理完成，输入形状: {img_batch.shape}, 输入值范围: [{np.min(img_batch)}, {np.max(img_batch)}]")
                 return img_batch
                 
             # 其他方法的预处理保持不变...
@@ -247,7 +246,7 @@ class FaceEnhancer:
                 
             # 记录原始图像
             original_img = img.copy()
-            print(f"输入图像: 形状={img.shape}, 类型={img.dtype}")
+            print(f"输入图像: 形状={img.shape}, 类型={img.dtype}, 值范围=[{np.min(img)}, {np.max(img)}]")
             
             # 检查模型会话是否可用
             if not hasattr(self, 'ort_session') or self.ort_session is None:
@@ -279,24 +278,56 @@ class FaceEnhancer:
                         
                     # 获取第一个输出
                     output = outputs[0][0]
-                    print(f"GPEN输出: 形状={output.shape}, 类型={output.dtype}")
+                    print(f"GPEN输出: 形状={output.shape}, 类型={output.dtype}, 值范围=[{np.min(output)}, {np.max(output)}]")
+                    
+                    # 保存原始模型输出
+                    try:
+                        transposed_output_path = os.path.join(debug_dir, "transposed_output.png")
+                        transposed = output.transpose(1, 2, 0)
+                        transposed_vis = ((transposed.clip(-1, 1) + 1) / 2 * 255).astype(np.uint8)
+                        cv2.imwrite(transposed_output_path, transposed_vis)  # 保持原始通道顺序
+                    except Exception as e:
+                        print(f"保存原始转置输出出错: {str(e)}")
                     
                     # 后处理
                     # 从[-1,1]转回[0,1]
                     output_norm = (output.transpose(1, 2, 0).clip(-1, 1) + 1) / 2
-                    # BGR转RGB并缩放到255
-                    output_rgb = (output_norm[:,:,::-1] * 255).clip(0, 255).astype(np.uint8)
                     
-                    # 保存原始输出
+                    # 将输出转为RGB格式
+                    # 注意：GPEN模型输出是BGR格式，需要转换为RGB
+                    output_bgr = (output_norm * 255).clip(0, 255).astype(np.uint8)
+                    output_rgb = cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB)
+                    
+                    # 保存原始BGR输出
                     try:
                         raw_output_path = os.path.join(debug_dir, "raw_model_output.png")
-                        cv2.imwrite(raw_output_path, cv2.cvtColor(output_rgb, cv2.COLOR_RGB2BGR))
+                        cv2.imwrite(raw_output_path, output_bgr)  # 直接保存BGR格式
                     except Exception as e:
                         print(f"保存原始输出出错: {str(e)}")
                     
-                    # 调整大小以匹配输入
+                    # 保存转换后的RGB输出
+                    try:
+                        rgb_output_path = os.path.join(debug_dir, "model_output_rgb.png")
+                        cv2.imwrite(rgb_output_path, cv2.cvtColor(output_rgb, cv2.COLOR_RGB2BGR))
+                    except Exception as e:
+                        print(f"保存RGB输出出错: {str(e)}")
+                    
+                    # 调整大小以匹配输入，保持宽高比
                     if (output_rgb.shape[0] != orig_h or output_rgb.shape[1] != orig_w):
-                        output_rgb = cv2.resize(output_rgb, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+                        # 计算保持宽高比的缩放比例
+                        scale = min(orig_h/output_rgb.shape[0], orig_w/output_rgb.shape[1])
+                        new_size = (int(output_rgb.shape[1] * scale), int(output_rgb.shape[0] * scale))
+                        print(f"调整输出大小，保持宽高比: 原始={output_rgb.shape[:2]}, 新尺寸={new_size}")
+                        
+                        output_rgb_resized = cv2.resize(output_rgb, new_size, interpolation=cv2.INTER_LANCZOS4)
+                        
+                        # 创建画布并居中放置调整大小后的图像
+                        output_canvas = np.zeros((orig_h, orig_w, 3), dtype=output_rgb.dtype)
+                        y_offset = (orig_h - output_rgb_resized.shape[0]) // 2
+                        x_offset = (orig_w - output_rgb_resized.shape[1]) // 2
+                        output_canvas[y_offset:y_offset+output_rgb_resized.shape[0], 
+                                    x_offset:x_offset+output_rgb_resized.shape[1]] = output_rgb_resized
+                        output_rgb = output_canvas
                     
                     # 保存调整大小后的输出
                     try:

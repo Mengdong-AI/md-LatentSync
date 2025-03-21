@@ -393,6 +393,12 @@ class LipsyncPipeline(DiffusionPipeline):
                     # 如果没有原始帧，创建黑色背景
                     ori_frame = np.zeros((original_h, original_w, 3), dtype=np.uint8)
                 
+                # 保存原始帧用于调试
+                debug_ori_orig_path = os.path.join(debug_dir, f"before_convert_frame_{i:04d}.png")
+                cv2.imwrite(debug_ori_orig_path, cv2.cvtColor(ori_frame, cv2.COLOR_RGB2BGR))
+                
+                # 确保原始帧是RGB格式（pipeline中处理视频都是使用RGB格式）
+                # 检查原始帧的颜色通道排序（基于域知识，视频通常是RGB格式）
                 # Convert to BGR for OpenCV processing
                 ori_frame_bgr = cv2.cvtColor(ori_frame, cv2.COLOR_RGB2BGR)
                 
@@ -406,6 +412,11 @@ class LipsyncPipeline(DiffusionPipeline):
                     # Skip invalid face
                     output_frames.append(ori_frame)
                     continue
+                
+                # 保存人脸图像用于调试
+                face_debug_path = os.path.join(debug_dir, f"face_before_{i:04d}.png")
+                face_debug = (face * 255.0).clip(0, 255).astype(np.uint8) if np.max(face) <= 1.0 else face.clip(0, 255).astype(np.uint8)
+                cv2.imwrite(face_debug_path, cv2.cvtColor(face_debug, cv2.COLOR_RGB2BGR))
                 
                 # 检查face的数据类型，确保兼容cv2.cvtColor
                 if face.dtype != np.float32:
@@ -433,15 +444,41 @@ class LipsyncPipeline(DiffusionPipeline):
                 # 临时转换为uint8用于OpenCV处理
                 face_for_cv = (face * 255.0).astype(np.uint8)
                 
-                # Convert face from RGB to BGR (for OpenCV)
+                # 确认人脸是RGB格式，转换为BGR用于OpenCV处理
                 face_bgr = cv2.cvtColor(face_for_cv, cv2.COLOR_RGB2BGR)
+                
+                # 保存转换后的人脸用于调试
+                face_bgr_debug_path = os.path.join(debug_dir, f"face_bgr_{i:04d}.png")
+                cv2.imwrite(face_bgr_debug_path, face_bgr)
                 
                 # Resize face to 512x512 for enhancement if needed
                 if opt_face_enhancer is not None and opt_face_enhancer.enhancement_method:
                     try:
                         print(f"[帧{i}] 开始增强面部，原始尺寸: {face_bgr.shape}")
-                        face_enhanced = cv2.resize(face_bgr, (512, 512), interpolation=cv2.INTER_LANCZOS4)
+                        
+                        # 保持宽高比进行缩放到512x512
+                        face_h, face_w = face_bgr.shape[:2]
+                        
+                        # 计算保持宽高比的缩放比例
+                        scale = min(512/face_h, 512/face_w)
+                        new_size = (int(face_w * scale), int(face_h * scale))
+                        
+                        # 缩放图像
+                        face_resized = cv2.resize(face_bgr, new_size, interpolation=cv2.INTER_LANCZOS4)
+                        
+                        # 创建512x512的画布并居中放置
+                        face_canvas = np.zeros((512, 512, 3), dtype=face_bgr.dtype)
+                        y_offset = (512 - face_resized.shape[0]) // 2
+                        x_offset = (512 - face_resized.shape[1]) // 2
+                        face_canvas[y_offset:y_offset+face_resized.shape[0], 
+                                    x_offset:x_offset+face_resized.shape[1]] = face_resized
+                        
+                        face_enhanced = face_canvas
                         print(f"[帧{i}] 缩放到512x512后 - 形状: {face_enhanced.shape}, 类型: {face_enhanced.dtype}, 范围: [{np.min(face_enhanced) if face_enhanced.size > 0 else 'N/A'}, {np.max(face_enhanced) if face_enhanced.size > 0 else 'N/A'}]")
+                        
+                        # 保存调整后的面部图像用于调试
+                        debug_resized_path = os.path.join(debug_dir, f"face_resized_{i:04d}.png")
+                        cv2.imwrite(debug_resized_path, face_enhanced)
                         
                         # 检查面部图像是否有效
                         if face_enhanced.size == 0 or np.all(face_enhanced == 0):
@@ -456,8 +493,13 @@ class LipsyncPipeline(DiffusionPipeline):
                             debug_enhanced_path = os.path.join(debug_dir, f"enhanced_face_{i:04d}.png")
                             cv2.imwrite(debug_enhanced_path, face_enhanced)
                             
+                            # 裁剪回原始区域（去除画布的padding）
+                            if new_size[0] < 512 or new_size[1] < 512:
+                                face_enhanced = face_enhanced[y_offset:y_offset+face_resized.shape[0], 
+                                                            x_offset:x_offset+face_resized.shape[1]]
+                            
                             # 调整回原始尺寸
-                            face_bgr = cv2.resize(face_enhanced, (face_bgr.shape[1], face_bgr.shape[0]), interpolation=cv2.INTER_LANCZOS4)
+                            face_bgr = cv2.resize(face_enhanced, (face_w, face_h), interpolation=cv2.INTER_LANCZOS4)
                             print(f"[帧{i}] 缩放回原始尺寸后 - 形状: {face_bgr.shape}")
                     except Exception as e:
                         print(f"[帧{i}] 面部增强过程出错: {str(e)}")
@@ -471,10 +513,27 @@ class LipsyncPipeline(DiffusionPipeline):
                 # Get frame size to warp back
                 frame_h, frame_w = ori_frame_bgr.shape[:2]
                 
-                # Create mask for face
+                # Create mask for face - 改进的mask生成和羽化处理
                 mask = np.ones((face_bgr.shape[0], face_bgr.shape[1], 1), dtype=np.float32)
                 mask = cv2.warpAffine(mask, inv_affine_matrix, (frame_w, frame_h))
-                mask = cv2.GaussianBlur(mask, (31, 31), 10)
+                
+                # 保存原始mask用于调试
+                debug_raw_mask_path = os.path.join(debug_dir, f"raw_mask_{i:04d}.png")
+                cv2.imwrite(debug_raw_mask_path, (mask * 255).astype(np.uint8))
+                
+                # 改进的mask处理，分两步进行模糊以获得更好的边缘过渡
+                # 先用小核心进行模糊以平滑边缘
+                mask_smooth = cv2.GaussianBlur(mask, (15, 15), 3)
+                # 再用大核心进行模糊以创建柔和的过渡区域
+                mask = cv2.GaussianBlur(mask_smooth, (31, 31), 10)
+                
+                # 检测边缘以便额外处理
+                mask_edge = cv2.Canny((mask * 255).astype(np.uint8), 50, 150)
+                mask_edge = cv2.dilate(mask_edge, np.ones((3, 3), np.uint8), iterations=2)
+                edge_weight = cv2.GaussianBlur(mask_edge.astype(np.float32) / 255.0, (9, 9), 3)
+                
+                # 在边缘区域应用额外的羽化
+                mask = mask * (1 - edge_weight * 0.3)
                 
                 # 保存调试用mask图像
                 debug_mask_path = os.path.join(debug_dir, f"face_mask_{i:04d}.png")
@@ -528,6 +587,11 @@ class LipsyncPipeline(DiffusionPipeline):
                 
                 # Convert back to RGB
                 output_frame = cv2.cvtColor(output_frame, cv2.COLOR_BGR2RGB)
+                
+                # 保存最终RGB输出帧用于调试
+                debug_final_path = os.path.join(debug_dir, f"final_rgb_{i:04d}.png")
+                cv2.imwrite(debug_final_path, cv2.cvtColor(output_frame, cv2.COLOR_RGB2BGR))
+                
                 output_frames.append(output_frame)
             
             except Exception as e:
