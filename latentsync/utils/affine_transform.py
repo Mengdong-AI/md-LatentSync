@@ -33,7 +33,7 @@ def transformation_from_points(points1, points0, smooth=True, p_bias=None):
     return M, p_bias
 
 
-class AlignRestore(object):
+class AlignRestore:
     def __init__(self, align_points=3, upscale_factor=1.0):
         if align_points == 3:
             self.upscale_factor = upscale_factor
@@ -83,67 +83,54 @@ class AlignRestore(object):
         )
         return cropped_face, affine_matrix
 
-    def restore_img(self, input_img, face, affine_matrix, return_mask=False):
-        h, w, _ = input_img.shape
-        
-        # Only scale affine matrix, not the entire image
-        inverse_affine = cv2.invertAffineTransform(affine_matrix)
-        if self.upscale_factor != 1.0:
-            inverse_affine *= self.upscale_factor
-            extra_offset = 0.5 * self.upscale_factor
-        else:
-            extra_offset = 0
-        inverse_affine[:, 2] += extra_offset
-        
-        # Ensure face is in uint8 format with correct range
+    def restore_img(self, img, face, affine_matrix):
+        """
+        将生成的人脸图像粘贴回原始图像
+        Args:
+            img: 原始图像
+            face: 生成的人脸图像
+            affine_matrix: 仿射变换矩阵
+        Returns:
+            粘贴后的图像
+        """
+        # 确保 face 是 uint8 类型
         if isinstance(face, torch.Tensor):
-            if face.dtype in [torch.float32, torch.float64, torch.float16]:
-                if face.max() <= 1.0:
-                    face = (face * 255).clamp(0, 255)
-                face = face.to(torch.uint8)
             face = face.cpu().numpy()
-        elif face.dtype != np.uint8:
-            if face.max() <= 1.0:
-                face = (face * 255).clip(0, 255)
-            face = face.astype(np.uint8)
-            
-        # Warp face back to original frame size
-        inv_restored = cv2.warpAffine(face, inverse_affine, (w, h), 
-                                     flags=cv2.INTER_LANCZOS4)
+        if face.dtype != np.uint8:
+            face = (face * 255).astype(np.uint8)
+
+        # 获取原始图像尺寸
+        h, w = img.shape[:2]
         
-        # Create and warp mask
-        mask = np.ones((self.face_size[1], self.face_size[0]), dtype=np.float32)
-        inv_mask = cv2.warpAffine(mask, inverse_affine, (w, h),
-                                 flags=cv2.INTER_LANCZOS4)
+        # 根据 upscale_factor 调整仿射矩阵
+        if self.upscale_factor != 1.0:
+            affine_matrix = affine_matrix.copy()
+            affine_matrix[:, 2] *= self.upscale_factor
+            affine_matrix[:, :2] *= self.upscale_factor
         
-        # Process mask
-        inv_mask_erosion = cv2.erode(
-            inv_mask, np.ones((int(2 * self.upscale_factor), int(2 * self.upscale_factor)), np.uint8)
-        )
-        pasted_face = inv_mask_erosion[:, :, None] * inv_restored
-        total_face_area = np.sum(inv_mask_erosion)
-        w_edge = max(int(total_face_area**0.5) // 20, 1)
-        erosion_radius = w_edge * 2
-        inv_mask_center = cv2.erode(inv_mask_erosion, np.ones((erosion_radius, erosion_radius), np.uint8))
+        # 创建掩码
+        mask = np.ones_like(face, dtype=np.uint8) * 255
         
-        # Create soft mask
-        blur_size = w_edge * 2
-        inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size + 1, blur_size + 1), 0)
-        inv_soft_mask = inv_soft_mask[:, :, None]
+        # 使用仿射变换将人脸和掩码变换回原始图像空间
+        warped_face = cv2.warpAffine(face, affine_matrix, (w, h), flags=cv2.INTER_LANCZOS4)
+        warped_mask = cv2.warpAffine(mask, affine_matrix, (w, h), flags=cv2.INTER_LANCZOS4)
         
-        if return_mask:
-            if len(inv_soft_mask.shape) > 2:
-                inv_soft_mask = inv_soft_mask[:, :, 0]
-            return inv_restored, inv_soft_mask
-            
-        # Blend face with original frame
-        result = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * input_img
+        # 对掩码进行腐蚀操作，创建平滑过渡
+        kernel_size = max(1, int(min(h, w) * 0.02))
+        kernel = np.ones((kernel_size, kernel_size), np.uint8)
+        warped_mask = cv2.erode(warped_mask, kernel, iterations=1)
         
-        if np.max(result) > 256:
-            result = result.astype(np.uint16)
-        else:
-            result = result.astype(np.uint8)
-            
+        # 创建软掩码
+        soft_mask = warped_mask.astype(np.float32) / 255.0
+        soft_mask = np.stack([soft_mask] * 3, axis=-1)
+        
+        # 混合图像
+        result = img * (1 - soft_mask) + warped_face * soft_mask
+        
+        # 确保输出类型正确
+        max_value = np.iinfo(img.dtype).max if img.dtype != np.float32 else 1.0
+        result = np.clip(result, 0, max_value).astype(img.dtype)
+        
         return result
 
 

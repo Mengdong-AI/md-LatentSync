@@ -402,7 +402,8 @@ class LipsyncPipeline(DiffusionPipeline):
         mask_image = load_fixed_mask(height, mask_image_path)
         # 设置面部放大因子
         self.image_processor = ImageProcessor(height, mask=mask, device="cuda", mask_image=mask_image)
-        self.image_processor.restorer.upscale_factor = face_upscale_factor
+        # 创建新的 AlignRestore 实例，确保使用正确的 upscale_factor
+        self.image_processor.restorer = AlignRestore(upscale_factor=face_upscale_factor)
         
         # 设置面部增强器
         self.face_enhancer = None
