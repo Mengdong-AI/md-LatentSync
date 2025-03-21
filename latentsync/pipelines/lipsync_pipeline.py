@@ -469,7 +469,14 @@ class LipsyncPipeline(DiffusionPipeline):
                 mask = cv2.GaussianBlur(mask, (31, 31), 10)
                 
                 # 扩展mask从1通道到3通道，以便与RGB图像兼容
-                mask_3channel = np.repeat(mask, 3, axis=2)
+                # 检查mask的维度并进行适当的扩展
+                if len(mask.shape) == 2:
+                    # 如果mask只有2维，先扩展为3维再重复
+                    mask = np.expand_dims(mask, axis=2)
+                    mask_3channel = np.repeat(mask, 3, axis=2)
+                else:
+                    # 如果已经是3维，直接重复
+                    mask_3channel = np.repeat(mask, 3, axis=2)
                 
                 # Warp face back to original position
                 warped_face = cv2.warpAffine(face_bgr, inv_affine_matrix, (frame_w, frame_h))
