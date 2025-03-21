@@ -97,26 +97,34 @@ class FaceEnhancer:
         Returns:
             预处理后的图像和原始大小的图像
         """
+        print(f"[DEBUG] 预处理开始，输入图像形状: {img.shape}, 类型: {img.dtype}")
+        
         # 保存原始图像大小
         self.original_height, self.original_width = img.shape[:2]
         
         # 保存原始图像的副本以便后处理
         self.original_img = cv2.resize(img.copy(), self.resolution, interpolation=cv2.INTER_LINEAR)
+        print(f"[DEBUG] 调整大小后的原始图像形状: {self.original_img.shape}")
         
         # 调整图像大小以匹配模型输入尺寸
         img_resized = cv2.resize(img, self.resolution, interpolation=cv2.INTER_LINEAR)
+        print(f"[DEBUG] 调整大小后的图像形状: {img_resized.shape}")
         
         # 转换为浮点型并标准化
         img_norm = img_resized.astype(np.float32)[:,:,::-1] / 255.0  # BGR -> RGB, normalize to [0, 1]
+        print(f"[DEBUG] 标准化后的图像范围: [{img_norm.min()}, {img_norm.max()}]")
         
         # 转换为NCHW格式
         img_transposed = img_norm.transpose((2, 0, 1))  # HWC -> CHW
+        print(f"[DEBUG] 转置后的图像形状: {img_transposed.shape}")
         
         # 标准化到[-1, 1]范围
         img_normalized = (img_transposed - 0.5) / 0.5
+        print(f"[DEBUG] 最终标准化后的范围: [{img_normalized.min()}, {img_normalized.max()}]")
         
         # 添加批次维度
         img_batch = np.expand_dims(img_normalized, axis=0).astype(np.float32)
+        print(f"[DEBUG] 最终预处理输出形状: {img_batch.shape}, 类型: {img_batch.dtype}")
         
         return img_batch
     
@@ -129,28 +137,38 @@ class FaceEnhancer:
         Returns:
             处理后的BGR图像，范围[0, 255]，uint8类型
         """
+        print(f"[DEBUG] 后处理开始，输入数据形状: {img.shape}, 类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
+        
         # 如果输出是float16类型，先转换为float32
         if img.dtype == np.float16:
+            print("[DEBUG] 检测到float16类型，转换为float32")
             img = img.astype(np.float32)
+            print(f"[DEBUG] 转换后类型: {img.dtype}, 值范围: [{img.min()}, {img.max()}]")
         
         # 如果输出是4D张量(NCHW)，去掉批次维度
         if len(img.shape) == 4:
             img = img[0]
+            print(f"[DEBUG] 去除批次维度后形状: {img.shape}")
         
         # 从CHW转换回HWC
         img = img.transpose(1, 2, 0)
+        print(f"[DEBUG] 转置后形状: {img.shape}")
         
         # 从[-1, 1]转换回[0, 1]
         img = (img + 1) * 0.5
+        print(f"[DEBUG] 转换到[0,1]范围后的值范围: [{img.min()}, {img.max()}]")
         
         # 从[0, 1]转换回[0, 255]并从RGB转换回BGR
         img = (img * 255.0)[:, :, ::-1]
+        print(f"[DEBUG] 转换到[0,255]范围后的值范围: [{img.min()}, {img.max()}]")
         
         # 裁剪到[0, 255]范围并转换为uint8
         img = np.clip(img, 0, 255).astype('uint8')
+        print(f"[DEBUG] 裁剪并转换为uint8后的值范围: [{img.min()}, {img.max()}]")
         
         # 调整回原始图像大小
         img = cv2.resize(img, (self.original_width, self.original_height), interpolation=cv2.INTER_LANCZOS4)
+        print(f"[DEBUG] 最终输出形状: {img.shape}, 类型: {img.dtype}")
         
         return img
     
@@ -166,23 +184,32 @@ class FaceEnhancer:
         """
         # 如果未启用或模型为空，返回原图
         if not self.enable or self.session is None:
+            print("[DEBUG] 增强器未启用或模型为空，返回原图")
             return img
         
         # 拷贝图像以避免修改原图
         img = img.copy()
+        print(f"[DEBUG] 输入图像形状: {img.shape}, 类型: {img.dtype}")
         
         try:
             # 预处理图像
+            print("[DEBUG] 开始预处理图像...")
             input_data = self.preprocess(img)
+            print(f"[DEBUG] 预处理后数据形状: {input_data.shape}, 类型: {input_data.dtype}, 值范围: [{input_data.min()}, {input_data.max()}]")
             
             # 运行ONNX推理
+            print("[DEBUG] 开始ONNX推理...")
             output = self.session.run(None, {self.input_name: input_data})[0]
+            print(f"[DEBUG] ONNX输出形状: {output.shape}, 类型: {output.dtype}, 值范围: [{output.min()}, {output.max()}]")
             
             # 后处理输出
+            print("[DEBUG] 开始后处理...")
             enhanced_img = self.postprocess(output)
+            print(f"[DEBUG] 后处理后图像形状: {enhanced_img.shape}, 类型: {enhanced_img.dtype}, 值范围: [{enhanced_img.min()}, {enhanced_img.max()}]")
             
             # 根据增强强度混合原图和增强结果
             if self.enhancement_strength < 1.0:
+                print(f"[DEBUG] 应用增强强度: {self.enhancement_strength}")
                 # 调整原图大小以匹配增强结果
                 original_resized = cv2.resize(img, (enhanced_img.shape[1], enhanced_img.shape[0]), 
                                              interpolation=cv2.INTER_LANCZOS4)
@@ -191,6 +218,7 @@ class FaceEnhancer:
             
             # 如果启用嘴唇保护并有人脸关键点，保留原始嘴唇区域
             if self.mouth_protection and face_landmarks is not None and len(face_landmarks) > 0:
+                print("[DEBUG] 应用嘴唇保护...")
                 try:
                     # 创建嘴唇区域遮罩
                     mask = np.zeros_like(enhanced_img)
@@ -250,10 +278,17 @@ class FaceEnhancer:
                         enhanced_img[mask] = original_resized[mask]
                 
                 except Exception as e:
-                    print(f"应用嘴唇保护时出错: {str(e)}")
+                    print(f"[ERROR] 应用嘴唇保护时出错: {str(e)}")
+                    print(f"[ERROR] 错误类型: {type(e)}")
+                    import traceback
+                    print(f"[ERROR] 堆栈跟踪:\n{traceback.format_exc()}")
             
+            print("[DEBUG] 增强完成，返回结果")
             return enhanced_img
             
         except Exception as e:
-            print(f"面部增强过程出错: {str(e)}")
+            print(f"[ERROR] 面部增强过程出错: {str(e)}")
+            print(f"[ERROR] 错误类型: {type(e)}")
+            import traceback
+            print(f"[ERROR] 堆栈跟踪:\n{traceback.format_exc()}")
             return img 
