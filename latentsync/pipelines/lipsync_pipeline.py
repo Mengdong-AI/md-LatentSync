@@ -325,31 +325,46 @@ class LipsyncPipeline(DiffusionPipeline):
                 debug_dir = "debug_frames"
                 os.makedirs(debug_dir, exist_ok=True)
                 
+                print(f"\nDebug info for frame {i}:")
+                print(f"Original frame shape: {video_frame.shape}, dtype: {video_frame.dtype}, range: [{video_frame.min()}, {video_frame.max()}]")
+                print(f"Face shape: {face.shape}, dtype: {face.dtype}, range: [{face.min()}, {face.max()}]")
+                print(f"Box coordinates: x1={x1:.1f}, y1={y1:.1f}, x2={x2:.1f}, y2={y2:.1f}")
+                print(f"Face size: {width}x{height}")
+                print(f"Affine matrix:\n{affine_matrix}")
+                
                 # 保存原始视频帧
                 cv2.imwrite(f"{debug_dir}/frame_{i}_1_original.jpg", cv2.cvtColor(video_frame, cv2.COLOR_RGB2BGR))
                 
                 # 保存生成的人脸
                 cv2.imwrite(f"{debug_dir}/frame_{i}_2_generated_face.jpg", cv2.cvtColor(face, cv2.COLOR_RGB2BGR))
 
-                # 如果启用了面部增强，保存增强后的人脸
-                if opt_face_enhancer is not None:
-                    enhanced_face = opt_face_enhancer.enhance(face)
-                    cv2.imwrite(f"{debug_dir}/frame_{i}_3_enhanced_face.jpg", cv2.cvtColor(enhanced_face, cv2.COLOR_RGB2BGR))
-                    face = enhanced_face
+                # 保存恢复前的帧
+                cv2.imwrite(f"{debug_dir}/frame_{i}_3_before_restore.jpg", cv2.cvtColor(video_frame, cv2.COLOR_RGB2BGR))
+                
+                # 保存原始生成人脸恢复的结果（面部增强之前）
+                print("\nRestoring face before enhancement:")
+                original_restored = self.image_processor.restorer.restore_img(video_frame.copy(), face.copy(), affine_matrix)
+                print(f"Original restored shape: {original_restored.shape}, dtype: {original_restored.dtype}, range: [{original_restored.min()}, {original_restored.max()}]")
+                cv2.imwrite(f"{debug_dir}/frame_{i}_4_restored_before_enhance.jpg", cv2.cvtColor(original_restored, cv2.COLOR_RGB2BGR))
 
-                # 保存恢复后的帧（粘贴人脸之前）
-                cv2.imwrite(f"{debug_dir}/frame_{i}_4_before_restore.jpg", cv2.cvtColor(video_frame, cv2.COLOR_RGB2BGR))
+            # 如果启用了面部增强，对人脸进行增强
+            if opt_face_enhancer is not None:
+                if i < 3:
+                    print("\nEnhancing face:")
+                face = opt_face_enhancer.enhance(face)
+                if i < 3:
+                    print(f"Enhanced face shape: {face.shape}, dtype: {face.dtype}, range: [{face.min()}, {face.max()}]")
+                    # 保存增强后的人脸
+                    cv2.imwrite(f"{debug_dir}/frame_{i}_5_enhanced_face.jpg", cv2.cvtColor(face, cv2.COLOR_RGB2BGR))
             
             # Restore face back to original frame
-            out_frame = self.image_processor.restorer.restore_img(video_frame, face, affine_matrix)
-            
-            # 调试：保存最终结果
             if i < 3:
-                cv2.imwrite(f"{debug_dir}/frame_{i}_5_final_result.jpg", cv2.cvtColor(out_frame, cv2.COLOR_RGB2BGR))
-            
-            # Apply face enhancement if enabled
-            if opt_face_enhancer is not None:
-                out_frame = opt_face_enhancer.enhance(out_frame)
+                print("\nRestoring enhanced face:")
+            out_frame = self.image_processor.restorer.restore_img(video_frame, face, affine_matrix)
+            if i < 3:
+                print(f"Final restored shape: {out_frame.shape}, dtype: {out_frame.dtype}, range: [{out_frame.min()}, {out_frame.max()}]")
+                # 保存最终结果
+                cv2.imwrite(f"{debug_dir}/frame_{i}_6_final_result.jpg", cv2.cvtColor(out_frame, cv2.COLOR_RGB2BGR))
 
             out_frames.append(out_frame)
 

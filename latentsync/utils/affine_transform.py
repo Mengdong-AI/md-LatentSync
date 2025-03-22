@@ -93,44 +93,68 @@ class AlignRestore:
         Returns:
             粘贴后的图像
         """
+        print("\nRestore_img debug info:")
+        print(f"Input image shape: {img.shape}, dtype: {img.dtype}, range: [{img.min()}, {img.max()}]")
+        print(f"Input face shape: {face.shape}, dtype: {face.dtype}, range: [{face.min()}, {face.max()}]")
+        print(f"Input affine matrix:\n{affine_matrix}")
+
         # 确保 face 是 uint8 类型
         if isinstance(face, torch.Tensor):
+            print("Converting face from torch.Tensor to numpy array")
             face = face.cpu().numpy()
         if face.dtype != np.uint8:
+            print(f"Converting face from {face.dtype} to uint8")
             face = (face * 255).astype(np.uint8)
+            print(f"After conversion - face range: [{face.min()}, {face.max()}]")
 
         # 获取原始图像尺寸
         h, w = img.shape[:2]
+        print(f"Target size: {w}x{h}")
         
         # 根据 upscale_factor 调整仿射矩阵
         if self.upscale_factor != 1.0:
+            print(f"Adjusting affine matrix with upscale_factor: {self.upscale_factor}")
             affine_matrix = affine_matrix.copy()
             affine_matrix[:, 2] *= self.upscale_factor
             affine_matrix[:, :2] *= self.upscale_factor
+            print(f"Adjusted affine matrix:\n{affine_matrix}")
         
         # 创建掩码
+        print("Creating mask")
         mask = np.ones_like(face, dtype=np.uint8) * 255
+        print(f"Mask shape: {mask.shape}, dtype: {mask.dtype}, range: [{mask.min()}, {mask.max()}]")
         
         # 使用仿射变换将人脸和掩码变换回原始图像空间
+        print("Applying affine transformation")
         warped_face = cv2.warpAffine(face, affine_matrix, (w, h), flags=cv2.INTER_LANCZOS4)
         warped_mask = cv2.warpAffine(mask, affine_matrix, (w, h), flags=cv2.INTER_LANCZOS4)
+        print(f"Warped face shape: {warped_face.shape}, range: [{warped_face.min()}, {warped_face.max()}]")
+        print(f"Warped mask shape: {warped_mask.shape}, range: [{warped_mask.min()}, {warped_mask.max()}]")
         
         # 对掩码进行腐蚀操作，创建平滑过渡
         kernel_size = max(1, int(min(h, w) * 0.02))
+        print(f"Erosion kernel size: {kernel_size}")
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
         warped_mask = cv2.erode(warped_mask, kernel, iterations=1)
+        print(f"After erosion - mask range: [{warped_mask.min()}, {warped_mask.max()}]")
         
-        # 创建软掩码，确保维度匹配
+        # 创建软掩码
+        print("Creating soft mask")
         soft_mask = warped_mask.astype(np.float32) / 255.0
-        if len(soft_mask.shape) == 2:  # 如果是单通道，扩展为三通道
+        if len(soft_mask.shape) == 2:
+            print("Expanding mask dimensions")
             soft_mask = np.expand_dims(soft_mask, axis=-1)
+        print(f"Soft mask shape: {soft_mask.shape}, range: [{soft_mask.min()}, {soft_mask.max()}]")
         
         # 混合图像
+        print("Blending images")
         result = img * (1 - soft_mask) + warped_face * soft_mask
+        print(f"Before clip - result range: [{result.min()}, {result.max()}]")
         
         # 确保输出类型正确
         max_value = np.iinfo(img.dtype).max if img.dtype != np.float32 else 1.0
         result = np.clip(result, 0, max_value).astype(img.dtype)
+        print(f"Final result shape: {result.shape}, dtype: {result.dtype}, range: [{result.min()}, {result.max()}]")
         
         return result
 

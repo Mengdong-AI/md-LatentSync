@@ -305,7 +305,8 @@ with gr.Blocks(title="LatentSync Video Processing") as demo:
                 files = []
                 for file in DEBUG_FRAMES_DIR.rglob("*"):
                     if file.is_file() and file.suffix.lower() in ['.png', '.jpg', '.jpeg']:
-                        files.append(str(file))
+                        # 返回(图片路径, 文件名)的元组
+                        files.append((str(file), file.name))
                 return sorted(files)
 
             gallery = gr.Gallery(
@@ -316,6 +317,8 @@ with gr.Blocks(title="LatentSync Video Processing") as demo:
                 rows=[3],
                 object_fit="contain",
                 height="auto",
+                show_download_button=True,  # 添加下载按钮
+                allow_preview=True,  # 允许预览大图
             )
 
             refresh_btn = gr.Button("Refresh")
