@@ -115,6 +115,46 @@ class ImageProcessor:
 
         return pixel_values, masked_pixel_values, mask
 
+    def get_mouth_mask(self, landmarks):
+        """Get mouth region mask from face landmarks"""
+        # 使用48-67这20个点来定义嘴部区域 (face alignment 68点标准)
+        mouth_points = landmarks[48:68]
+        
+        # 稍微扩大嘴部区域
+        center = np.mean(mouth_points, axis=0)
+        mouth_points = mouth_points - center
+        mouth_points = mouth_points * 1.2  # 扩大20%
+        mouth_points = mouth_points + center
+        
+        # 创建mask
+        mask = np.zeros((self.resolution, self.resolution), dtype=np.float32)
+        points = mouth_points.astype(np.int32)
+        cv2.fillPoly(mask, [points], 1)
+        
+        # 平滑mask边缘
+        mask = cv2.GaussianBlur(mask, (11, 11), 3)
+        return mask
+
+    def restore_img_mouth_only(self, original_img, generated_face, affine_matrix, landmarks):
+        """Only restore the mouth region of the face"""
+        # 获取嘴部mask
+        mouth_mask = self.get_mouth_mask(landmarks)
+        
+        # 将mask转换到原始图片空间
+        h, w = original_img.shape[:2]
+        inv_affine_matrix = cv2.invertAffineTransform(affine_matrix)
+        
+        # 将生成的人脸和mask转换回原始图片空间
+        warped_face = cv2.warpAffine(generated_face, inv_affine_matrix, (w, h), borderValue=(0, 0, 0))
+        warped_mask = cv2.warpAffine(mouth_mask, inv_affine_matrix, (w, h), borderValue=(0, 0, 0))
+        
+        # 扩展mask维度以匹配图片通道
+        warped_mask = np.expand_dims(warped_mask, axis=2)
+        
+        # 使用mask混合原始图片和生成的人脸
+        result = original_img * (1 - warped_mask) + warped_face * warped_mask
+        return result.astype(np.uint8)
+
     def affine_transform(self, image: torch.Tensor, allow_multi_faces: bool = True) -> np.ndarray:
         # image = rearrange(image, "c h w-> h w c").numpy()
         if self.fa is None:
@@ -124,9 +164,22 @@ class ImageProcessor:
             detected_faces = self.fa.get_landmarks(image)
             if detected_faces is None:
                 raise RuntimeError("Face not detected")
-            if not allow_multi_faces and len(detected_faces) > 1:
-                raise RuntimeError("More than one face detected")
-            lm68 = detected_faces[0]
+            
+            # Select the largest face when multiple faces are detected
+            if len(detected_faces) > 1:
+                # Calculate face bounding boxes
+                face_boxes = []
+                for landmarks in detected_faces:
+                    x_min, y_min = landmarks.min(axis=0)
+                    x_max, y_max = landmarks.max(axis=0)
+                    face_boxes.append([x_min, y_min, x_max, y_max])
+                
+                # Calculate face areas and find the largest one
+                face_areas = [(box[2] - box[0]) * (box[3] - box[1]) for box in face_boxes]
+                largest_face_idx = np.argmax(face_areas)
+                lm68 = detected_faces[largest_face_idx]
+            else:
+                lm68 = detected_faces[0]
 
         points = self.smoother.smooth(lm68)
         lmk3_ = np.zeros((3, 2))
@@ -140,11 +193,11 @@ class ImageProcessor:
         box = [0, 0, face.shape[1], face.shape[0]]  # x1, y1, x2, y2
         face = cv2.resize(face, (self.resolution, self.resolution), interpolation=cv2.INTER_LANCZOS4)
         face = rearrange(torch.from_numpy(face), "h w c -> c h w")
-        return face, box, affine_matrix
+        return face, box, affine_matrix, lm68  # 返回关键点信息
 
     def preprocess_fixed_mask_image(self, image: torch.Tensor, affine_transform=False):
         if affine_transform:
-            image, _, _ = self.affine_transform(image)
+            image, _, _, _ = self.affine_transform(image)
         else:
             image = self.resize(image)
         pixel_values = self.normalize(image / 255.0)
@@ -333,7 +386,7 @@ if __name__ == "__main__":
 
         frame = rearrange(torch.Tensor(frame).type(torch.uint8), "h w c ->  c h w")
         # face, masked_face, _ = image_processor.preprocess_fixed_mask_image(frame, affine_transform=True)
-        face, _, _ = image_processor.affine_transform(frame)
+        face, _, _, _ = image_processor.affine_transform(frame)
 
         break
 
