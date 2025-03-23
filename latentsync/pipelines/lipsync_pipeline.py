@@ -280,6 +280,10 @@ class LipsyncPipeline(DiffusionPipeline):
         video_frames = video_frames[: len(faces)]
         out_frames = []
         print(f"Restoring {len(faces)} faces...")
+        
+        # 创建debug目录
+        os.makedirs("debug_frames", exist_ok=True)
+        
         for index, face in enumerate(tqdm.tqdm(faces)):
             x1, y1, x2, y2 = boxes[index]
             height = int(y2 - y1)
@@ -292,7 +296,6 @@ class LipsyncPipeline(DiffusionPipeline):
             # Apply face enhancement before restoration
             try:
                 enhanced_face = self.face_enhancer.enhance(face)
-                # Check enhanced face data type
                 if enhanced_face is None:
                     print(f"Warning: Face enhancement failed for frame {index}, using original face")
                     enhanced_face = face
@@ -300,7 +303,6 @@ class LipsyncPipeline(DiffusionPipeline):
                     print(f"Warning: Enhanced face dtype is {enhanced_face.dtype}, converting to uint8")
                     enhanced_face = np.clip(enhanced_face, 0, 255).astype(np.uint8)
                 
-                # Verify shape consistency
                 if enhanced_face.shape != face.shape:
                     print(f"Warning: Enhanced face shape {enhanced_face.shape} != original shape {face.shape}, resizing")
                     enhanced_face = cv2.resize(enhanced_face, (width, height), interpolation=cv2.INTER_LANCZOS4)
@@ -316,6 +318,30 @@ class LipsyncPipeline(DiffusionPipeline):
                 landmarks_list[index]
             )
             out_frames.append(out_frame)
+            
+            # 保存前5帧的调试图像
+            if index < 5:
+                # 保存原始视频帧
+                cv2.imwrite(
+                    f"debug_frames/frame_{index:03d}_original.png",
+                    cv2.cvtColor(video_frames[index], cv2.COLOR_RGB2BGR)
+                )
+                # 保存平滑前的mask
+                cv2.imwrite(
+                    f"debug_frames/frame_{index:03d}_mask_before_blur.png",
+                    cv2.imread("debug_mouth_mask_before_blur.png")
+                )
+                # 保存最终的mask
+                cv2.imwrite(
+                    f"debug_frames/frame_{index:03d}_mask_final.png",
+                    cv2.imread("debug_mouth_mask.png")
+                )
+                # 保存最终的视频帧
+                cv2.imwrite(
+                    f"debug_frames/frame_{index:03d}_result.png",
+                    cv2.cvtColor(out_frame, cv2.COLOR_RGB2BGR)
+                )
+        
         return np.stack(out_frames, axis=0)
 
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
