@@ -82,52 +82,32 @@ class AlignRestore(object):
         )
         return cropped_face, affine_matrix
 
-    def restore_img(self, input_img, face, affine_matrix, landmarks=None, use_lip_mask=True):
+    def restore_img(self, input_img, face, affine_matrix):
         h, w, _ = input_img.shape
         h_up, w_up = int(h * self.upscale_factor), int(w * self.upscale_factor)
         upsample_img = cv2.resize(input_img, (w_up, h_up), interpolation=cv2.INTER_LANCZOS4)
         inverse_affine = cv2.invertAffineTransform(affine_matrix)
         inverse_affine *= self.upscale_factor
-        
         if self.upscale_factor > 1:
             extra_offset = 0.5 * self.upscale_factor
         else:
             extra_offset = 0
         inverse_affine[:, 2] += extra_offset
-        
         inv_restored = cv2.warpAffine(face, inverse_affine, (w_up, h_up), flags=cv2.INTER_LANCZOS4)
-        
-        if use_lip_mask and landmarks is not None:
-            # 使用唇形蒙版
-            from .lip_mask import LipMaskGenerator
-            if not hasattr(self, 'lip_mask_generator'):
-                self.lip_mask_generator = LipMaskGenerator()
-            
-            # 对关键点应用仿射变换
-            landmarks_homogeneous = np.concatenate([landmarks, np.ones((landmarks.shape[0], 1))], axis=1)
-            transformed_landmarks = np.dot(landmarks_homogeneous, inverse_affine.T)
-            
-            # 创建唇形区域蒙版
-            mask = self.lip_mask_generator.create_lip_mask(transformed_landmarks, (h_up, w_up))
-            # 使用蒙版混合图像
-            upsample_img = self.lip_mask_generator.blend_images(upsample_img, inv_restored, mask)
-        else:
-            # 使用原有的全脸混合方式
-            mask = np.ones((self.face_size[1], self.face_size[0]), dtype=np.float32)
-            inv_mask = cv2.warpAffine(mask, inverse_affine, (w_up, h_up))
-            inv_mask_erosion = cv2.erode(
-                inv_mask, np.ones((int(2 * self.upscale_factor), int(2 * self.upscale_factor)), np.uint8)
-            )
-            pasted_face = inv_mask_erosion[:, :, None] * inv_restored
-            total_face_area = np.sum(inv_mask_erosion)
-            w_edge = int(total_face_area**0.5) // 20
-            erosion_radius = w_edge * 2
-            inv_mask_center = cv2.erode(inv_mask_erosion, np.ones((erosion_radius, erosion_radius), np.uint8))
-            blur_size = w_edge * 2
-            inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size + 1, blur_size + 1), 0)
-            inv_soft_mask = inv_soft_mask[:, :, None]
-            upsample_img = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
-            
+        mask = np.ones((self.face_size[1], self.face_size[0]), dtype=np.float32)
+        inv_mask = cv2.warpAffine(mask, inverse_affine, (w_up, h_up))
+        inv_mask_erosion = cv2.erode(
+            inv_mask, np.ones((int(2 * self.upscale_factor), int(2 * self.upscale_factor)), np.uint8)
+        )
+        pasted_face = inv_mask_erosion[:, :, None] * inv_restored
+        total_face_area = np.sum(inv_mask_erosion)
+        w_edge = int(total_face_area**0.5) // 20
+        erosion_radius = w_edge * 2
+        inv_mask_center = cv2.erode(inv_mask_erosion, np.ones((erosion_radius, erosion_radius), np.uint8))
+        blur_size = w_edge * 2
+        inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size + 1, blur_size + 1), 0)
+        inv_soft_mask = inv_soft_mask[:, :, None]
+        upsample_img = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
         if np.max(upsample_img) > 256:
             upsample_img = upsample_img.astype(np.uint16)
         else:

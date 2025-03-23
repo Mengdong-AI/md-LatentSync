@@ -311,30 +311,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 print(f"Warning: Face enhancement failed with error: {str(e)}, using original face")
                 enhanced_face = face
             
-            # Get face landmarks for lip mask
-            if self.fa is not None:
-                landmarks = self.fa.get_landmarks(video_frames[index])
-                if landmarks is not None and len(landmarks) > 0:
-                    # Use the largest face if multiple faces are detected
-                    if len(landmarks) > 1:
-                        face_areas = []
-                        for lm in landmarks:
-                            x_min, y_min = lm.min(axis=0)
-                            x_max, y_max = lm.max(axis=0)
-                            face_areas.append((x_max - x_min) * (y_max - y_min))
-                        landmarks = landmarks[np.argmax(face_areas)]
-                else:
-                    landmarks = None
-            else:
-                landmarks = None
-            
-            out_frame = self.image_processor.restorer.restore_img(
-                video_frames[index], 
-                enhanced_face, 
-                affine_matrices[index],
-                landmarks=landmarks,
-                use_lip_mask=True
-            )
+            out_frame = self.image_processor.restorer.restore_img(video_frames[index], enhanced_face, affine_matrices[index])
             out_frames.append(out_frame)
         return np.stack(out_frames, axis=0)
 
