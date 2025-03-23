@@ -264,26 +264,20 @@ class LipsyncPipeline(DiffusionPipeline):
         faces = []
         boxes = []
         affine_matrices = []
-        landmarks_list = []
         print(f"Affine transforming {len(video_frames)} faces...")
         for frame in tqdm.tqdm(video_frames):
-            face, box, affine_matrix, landmarks = self.image_processor.affine_transform(frame)
+            face, box, affine_matrix = self.image_processor.affine_transform(frame)
             faces.append(face)
             boxes.append(box)
             affine_matrices.append(affine_matrix)
-            landmarks_list.append(landmarks)
 
         faces = torch.stack(faces)
-        return faces, boxes, affine_matrices, landmarks_list
+        return faces, boxes, affine_matrices
 
-    def restore_video(self, faces: torch.Tensor, video_frames: np.ndarray, boxes: list, affine_matrices: list, landmarks_list: list):
+    def restore_video(self, faces: torch.Tensor, video_frames: np.ndarray, boxes: list, affine_matrices: list):
         video_frames = video_frames[: len(faces)]
         out_frames = []
         print(f"Restoring {len(faces)} faces...")
-        
-        # 创建debug目录
-        os.makedirs("debug_frames", exist_ok=True)
-        
         for index, face in enumerate(tqdm.tqdm(faces)):
             x1, y1, x2, y2 = boxes[index]
             height = int(y2 - y1)
@@ -293,9 +287,15 @@ class LipsyncPipeline(DiffusionPipeline):
             face = (face / 2 + 0.5).clamp(0, 1)
             face = (face * 255).to(torch.uint8).cpu().numpy()
             
+            # Check input face data type
+            if face.dtype != np.uint8:
+                print(f"Warning: Input face dtype is {face.dtype}, converting to uint8")
+                face = np.clip(face, 0, 255).astype(np.uint8)
+            
             # Apply face enhancement before restoration
             try:
                 enhanced_face = self.face_enhancer.enhance(face)
+                # Check enhanced face data type
                 if enhanced_face is None:
                     print(f"Warning: Face enhancement failed for frame {index}, using original face")
                     enhanced_face = face
@@ -303,6 +303,7 @@ class LipsyncPipeline(DiffusionPipeline):
                     print(f"Warning: Enhanced face dtype is {enhanced_face.dtype}, converting to uint8")
                     enhanced_face = np.clip(enhanced_face, 0, 255).astype(np.uint8)
                 
+                # Verify shape consistency
                 if enhanced_face.shape != face.shape:
                     print(f"Warning: Enhanced face shape {enhanced_face.shape} != original shape {face.shape}, resizing")
                     enhanced_face = cv2.resize(enhanced_face, (width, height), interpolation=cv2.INTER_LANCZOS4)
@@ -310,74 +311,63 @@ class LipsyncPipeline(DiffusionPipeline):
                 print(f"Warning: Face enhancement failed with error: {str(e)}, using original face")
                 enhanced_face = face
             
-            # Only restore the mouth region
-            out_frame = self.image_processor.restore_img_mouth_only(
+            # Get face landmarks for lip mask
+            if self.fa is not None:
+                landmarks = self.fa.get_landmarks(video_frames[index])
+                if landmarks is not None and len(landmarks) > 0:
+                    # Use the largest face if multiple faces are detected
+                    if len(landmarks) > 1:
+                        face_areas = []
+                        for lm in landmarks:
+                            x_min, y_min = lm.min(axis=0)
+                            x_max, y_max = lm.max(axis=0)
+                            face_areas.append((x_max - x_min) * (y_max - y_min))
+                        landmarks = landmarks[np.argmax(face_areas)]
+                else:
+                    landmarks = None
+            else:
+                landmarks = None
+            
+            out_frame = self.image_processor.restorer.restore_img(
                 video_frames[index], 
                 enhanced_face, 
                 affine_matrices[index],
-                landmarks_list[index]
+                landmarks=landmarks,
+                use_lip_mask=True
             )
             out_frames.append(out_frame)
-            
-            # 保存前5帧的调试图像
-            if index < 5:
-                # 保存原始视频帧
-                cv2.imwrite(
-                    f"debug_frames/frame_{index:03d}_original.png",
-                    cv2.cvtColor(video_frames[index], cv2.COLOR_RGB2BGR)
-                )
-                # 保存平滑前的mask
-                cv2.imwrite(
-                    f"debug_frames/frame_{index:03d}_mask_before_blur.png",
-                    cv2.imread("debug_mouth_mask_before_blur.png")
-                )
-                # 保存最终的mask
-                cv2.imwrite(
-                    f"debug_frames/frame_{index:03d}_mask_final.png",
-                    cv2.imread("debug_mouth_mask.png")
-                )
-                # 保存最终的视频帧
-                cv2.imwrite(
-                    f"debug_frames/frame_{index:03d}_result.png",
-                    cv2.cvtColor(out_frame, cv2.COLOR_RGB2BGR)
-                )
-        
         return np.stack(out_frames, axis=0)
 
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
         # If the audio is longer than the video, we need to loop the video
         if len(whisper_chunks) > len(video_frames):
-            faces, boxes, affine_matrices, landmarks_list = self.affine_transform_video(video_frames)
+            faces, boxes, affine_matrices = self.affine_transform_video(video_frames)
             num_loops = math.ceil(len(whisper_chunks) / len(video_frames))
             loop_video_frames = []
             loop_faces = []
             loop_boxes = []
             loop_affine_matrices = []
-            loop_landmarks_list = []
             for i in range(num_loops):
                 if i % 2 == 0:
                     loop_video_frames.append(video_frames)
                     loop_faces.append(faces)
                     loop_boxes += boxes
                     loop_affine_matrices += affine_matrices
-                    loop_landmarks_list += landmarks_list
                 else:
                     loop_video_frames.append(video_frames[::-1])
                     loop_faces.append(faces.flip(0))
                     loop_boxes += boxes[::-1]
                     loop_affine_matrices += affine_matrices[::-1]
-                    loop_landmarks_list += landmarks_list[::-1]
 
             video_frames = np.concatenate(loop_video_frames, axis=0)[: len(whisper_chunks)]
             faces = torch.cat(loop_faces, dim=0)[: len(whisper_chunks)]
             boxes = loop_boxes[: len(whisper_chunks)]
             affine_matrices = loop_affine_matrices[: len(whisper_chunks)]
-            landmarks_list = loop_landmarks_list[: len(whisper_chunks)]
         else:
             video_frames = video_frames[: len(whisper_chunks)]
-            faces, boxes, affine_matrices, landmarks_list = self.affine_transform_video(video_frames)
+            faces, boxes, affine_matrices = self.affine_transform_video(video_frames)
 
-        return video_frames, faces, boxes, affine_matrices, landmarks_list
+        return video_frames, faces, boxes, affine_matrices
 
     @torch.no_grad()
     def __call__(
@@ -439,7 +429,7 @@ class LipsyncPipeline(DiffusionPipeline):
         audio_samples = read_audio(audio_path)
         video_frames = read_video(video_path, use_decord=False)
 
-        video_frames, faces, boxes, affine_matrices, landmarks_list = self.loop_video(whisper_chunks, video_frames)
+        video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames)
 
         synced_video_frames = []
         masked_video_frames = []
@@ -536,7 +526,7 @@ class LipsyncPipeline(DiffusionPipeline):
             synced_video_frames.append(decoded_latents)
             # masked_video_frames.append(masked_pixel_values)
 
-        synced_video_frames = self.restore_video(torch.cat(synced_video_frames), video_frames, boxes, affine_matrices, landmarks_list)
+        synced_video_frames = self.restore_video(torch.cat(synced_video_frames), video_frames, boxes, affine_matrices)
         # masked_video_frames = self.restore_video(
         #     torch.cat(masked_video_frames), video_frames, boxes, affine_matrices
         # )

@@ -9,7 +9,7 @@ class FaceEnhancer:
     """人脸增强器，支持使用ONNX模型的GPEN，GFPGAN和CodeFormer三种增强方式"""
     
     def __init__(self, enhancement_method='gfpgan', model_path=None, device='cuda', enhancement_strength=0.5, 
-                 enable=True, mouth_protection=True, mouth_protection_strength=0.8):
+                 enable=True, mouth_protection=False, mouth_protection_strength=0.8):
         """初始化人脸增强器
         
         Args:
@@ -172,7 +172,15 @@ class FaceEnhancer:
             input_data = self.preprocess(img)
             
             # 运行ONNX推理
-            output = self.session.run(None, {self.input_name: input_data})[0]
+            if self.enhancement_method == 'codeformer':
+                # CodeFormer需要两个输入：x（图像）和w（权重，必须是double类型）
+                w = np.array([self.enhancement_strength], dtype=np.float64)
+                output = self.session.run(None, {
+                    'x': input_data,
+                    'w': w
+                })[0]
+            else:
+                output = self.session.run(None, {self.input_name: input_data})[0]
             
             # 后处理输出
             enhanced_img = self.postprocess(output)
