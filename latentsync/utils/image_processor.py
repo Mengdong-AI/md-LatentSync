@@ -40,9 +40,7 @@ class ImageProcessor:
     def __init__(self, resolution: int = 512, mask: str = "fix_mask", device: str = "cpu", mask_image=None):
         self.resolution = resolution
         self.resize = transforms.Resize(
-            (resolution, resolution), 
-            interpolation=transforms.InterpolationMode.LANCZOS, 
-            antialias=True
+            (resolution, resolution), interpolation=transforms.InterpolationMode.BILINEAR, antialias=True
         )
         self.normalize = transforms.Normalize([0.5], [0.5], inplace=True)
         self.mask = mask
@@ -52,7 +50,7 @@ class ImageProcessor:
         if mask == "fix_mask":
             self.face_mesh = None
             self.smoother = laplacianSmooth()
-            self.restorer = AlignRestore(upscale_factor=1.0)
+            self.restorer = AlignRestore()
 
             if mask_image is None:
                 self.mask_image = load_fixed_mask(resolution)

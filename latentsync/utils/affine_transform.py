@@ -2,7 +2,6 @@
 
 import numpy as np
 import cv2
-import torch
 
 
 def transformation_from_points(points1, points0, smooth=True, p_bias=None):
@@ -33,10 +32,10 @@ def transformation_from_points(points1, points0, smooth=True, p_bias=None):
     return M, p_bias
 
 
-class AlignRestore:
-    def __init__(self, align_points=3, upscale_factor=1.0):
+class AlignRestore(object):
+    def __init__(self, align_points=3):
         if align_points == 3:
-            self.upscale_factor = upscale_factor
+            self.upscale_factor = 1
             ratio = 2.8
             self.crop_ratio = (ratio, ratio)
             self.face_template = np.array([[19 - 2, 30 - 10], [56 + 2, 30 - 10], [37.5, 45 - 5]])
@@ -83,80 +82,37 @@ class AlignRestore:
         )
         return cropped_face, affine_matrix
 
-    def restore_img(self, img, face, affine_matrix):
-        """
-        将生成的人脸图像粘贴回原始图像
-        Args:
-            img: 原始图像
-            face: 生成的人脸图像
-            affine_matrix: 仿射变换矩阵
-        Returns:
-            粘贴后的图像
-        """
-        print("\nRestore_img debug info:")
-        print(f"Input image shape: {img.shape}, dtype: {img.dtype}, range: [{img.min()}, {img.max()}]")
-        print(f"Input face shape: {face.shape}, dtype: {face.dtype}, range: [{face.min()}, {face.max()}]")
-        print(f"Input affine matrix:\n{affine_matrix}")
-
-        # 确保 face 是 uint8 类型
-        if isinstance(face, torch.Tensor):
-            print("Converting face from torch.Tensor to numpy array")
-            face = face.cpu().numpy()
-        if face.dtype != np.uint8:
-            print(f"Converting face from {face.dtype} to uint8")
-            face = (face * 255).astype(np.uint8)
-            print(f"After conversion - face range: [{face.min()}, {face.max()}]")
-
-        # 获取原始图像尺寸
-        h, w = img.shape[:2]
-        print(f"Target size: {w}x{h}")
-        
-        # 根据 upscale_factor 调整仿射矩阵
-        if self.upscale_factor != 1.0:
-            print(f"Adjusting affine matrix with upscale_factor: {self.upscale_factor}")
-            affine_matrix = affine_matrix.copy()
-            affine_matrix[:, 2] *= self.upscale_factor
-            affine_matrix[:, :2] *= self.upscale_factor
-            print(f"Adjusted affine matrix:\n{affine_matrix}")
-        
-        # 创建掩码
-        print("Creating mask")
-        mask = np.ones_like(face, dtype=np.uint8) * 255
-        print(f"Mask shape: {mask.shape}, dtype: {mask.dtype}, range: [{mask.min()}, {mask.max()}]")
-        
-        # 使用仿射变换将人脸和掩码变换回原始图像空间
-        print("Applying affine transformation")
-        warped_face = cv2.warpAffine(face, affine_matrix, (w, h), flags=cv2.INTER_LANCZOS4)
-        warped_mask = cv2.warpAffine(mask, affine_matrix, (w, h), flags=cv2.INTER_LANCZOS4)
-        print(f"Warped face shape: {warped_face.shape}, range: [{warped_face.min()}, {warped_face.max()}]")
-        print(f"Warped mask shape: {warped_mask.shape}, range: [{warped_mask.min()}, {warped_mask.max()}]")
-        
-        # 对掩码进行腐蚀操作，创建平滑过渡
-        kernel_size = max(1, int(min(h, w) * 0.02))
-        print(f"Erosion kernel size: {kernel_size}")
-        kernel = np.ones((kernel_size, kernel_size), np.uint8)
-        warped_mask = cv2.erode(warped_mask, kernel, iterations=1)
-        print(f"After erosion - mask range: [{warped_mask.min()}, {warped_mask.max()}]")
-        
-        # 创建软掩码
-        print("Creating soft mask")
-        soft_mask = warped_mask.astype(np.float32) / 255.0
-        if len(soft_mask.shape) == 2:
-            print("Expanding mask dimensions")
-            soft_mask = np.expand_dims(soft_mask, axis=-1)
-        print(f"Soft mask shape: {soft_mask.shape}, range: [{soft_mask.min()}, {soft_mask.max()}]")
-        
-        # 混合图像
-        print("Blending images")
-        result = img * (1 - soft_mask) + warped_face * soft_mask
-        print(f"Before clip - result range: [{result.min()}, {result.max()}]")
-        
-        # 确保输出类型正确
-        max_value = np.iinfo(img.dtype).max if img.dtype != np.float32 else 1.0
-        result = np.clip(result, 0, max_value).astype(img.dtype)
-        print(f"Final result shape: {result.shape}, dtype: {result.dtype}, range: [{result.min()}, {result.max()}]")
-        
-        return result
+    def restore_img(self, input_img, face, affine_matrix):
+        h, w, _ = input_img.shape
+        h_up, w_up = int(h * self.upscale_factor), int(w * self.upscale_factor)
+        upsample_img = cv2.resize(input_img, (w_up, h_up), interpolation=cv2.INTER_LANCZOS4)
+        inverse_affine = cv2.invertAffineTransform(affine_matrix)
+        inverse_affine *= self.upscale_factor
+        if self.upscale_factor > 1:
+            extra_offset = 0.5 * self.upscale_factor
+        else:
+            extra_offset = 0
+        inverse_affine[:, 2] += extra_offset
+        inv_restored = cv2.warpAffine(face, inverse_affine, (w_up, h_up), flags=cv2.INTER_LANCZOS4)
+        mask = np.ones((self.face_size[1], self.face_size[0]), dtype=np.float32)
+        inv_mask = cv2.warpAffine(mask, inverse_affine, (w_up, h_up))
+        inv_mask_erosion = cv2.erode(
+            inv_mask, np.ones((int(2 * self.upscale_factor), int(2 * self.upscale_factor)), np.uint8)
+        )
+        pasted_face = inv_mask_erosion[:, :, None] * inv_restored
+        total_face_area = np.sum(inv_mask_erosion)
+        w_edge = int(total_face_area**0.5) // 20
+        erosion_radius = w_edge * 2
+        inv_mask_center = cv2.erode(inv_mask_erosion, np.ones((erosion_radius, erosion_radius), np.uint8))
+        blur_size = w_edge * 2
+        inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size + 1, blur_size + 1), 0)
+        inv_soft_mask = inv_soft_mask[:, :, None]
+        upsample_img = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
+        if np.max(upsample_img) > 256:
+            upsample_img = upsample_img.astype(np.uint16)
+        else:
+            upsample_img = upsample_img.astype(np.uint8)
+        return upsample_img
 
 
 class laplacianSmooth:

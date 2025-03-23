@@ -6,7 +6,6 @@ import os
 import shutil
 from typing import Callable, List, Optional, Union
 import subprocess
-import traceback
 
 import numpy as np
 import torch
@@ -29,16 +28,15 @@ from diffusers.utils import deprecate, logging
 
 from einops import rearrange
 import cv2
-from decord import VideoReader
 
 from ..models.unet import UNet3DConditionModel
 from ..utils.util import read_video, read_audio, write_video, check_ffmpeg_installed
 from ..utils.image_processor import ImageProcessor, load_fixed_mask
 from ..whisper.audio2feature import Audio2Feature
-from ..utils.face_enhancer import FaceEnhancer  # 导入面部增强器
-from ..utils.affine_transform import AlignRestore  # 添加 AlignRestore 导入
 import tqdm
 import soundfile as sf
+
+from ..utils.face_enhancer import FaceEnhancer
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -122,6 +120,14 @@ class LipsyncPipeline(DiffusionPipeline):
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
 
         self.set_progress_bar_config(desc="Steps")
+
+        # Initialize face enhancer
+        self.face_enhancer = FaceEnhancer(
+            enhancement_method='gfpgan',
+            device='cuda',
+            enhancement_strength=0.5,
+            enable=True
+        )
 
     def enable_vae_slicing(self):
         self.vae.enable_slicing()
@@ -268,106 +274,45 @@ class LipsyncPipeline(DiffusionPipeline):
         faces = torch.stack(faces)
         return faces, boxes, affine_matrices
 
-    def restore_video(self, faces, boxes, affine_matrices, source_video_path, opt_face_enhancer=None, original_aspect_ratio=True):
-        """Restore video with aligned faces.
-        
-        Args:
-            faces (np.ndarray): Aligned faces, with shape [T, 1, 3, H, W].
-            boxes (np.ndarray): Face boxes, with shape [T, 1, 4].
-            affine_matrices (np.ndarray): Affine matrices, with shape [T, 1, 2, 3].
-            source_video_path (str): Path to original video.
-            opt_face_enhancer (FaceEnhancer, optional): Face enhancer. Defaults to None.
-            original_aspect_ratio (bool, optional): Whether to keep original aspect ratio. Defaults to True.
-            
-        Returns:
-            np.ndarray: Restored video, with shape [T, H, W, 3].
-        """
-        # Read original video
-        vr = VideoReader(source_video_path)
-        video_frames = vr[:]
-        if not hasattr(video_frames, "__getitem__"):
-            video_frames = video_frames.asnumpy() if hasattr(video_frames, "asnumpy") else np.array(video_frames)
-        
-        # Process each frame
+    def restore_video(self, faces: torch.Tensor, video_frames: np.ndarray, boxes: list, affine_matrices: list):
+        video_frames = video_frames[: len(faces)]
         out_frames = []
         print(f"Restoring {len(faces)} faces...")
-        for i in tqdm.tqdm(range(len(faces))):
-            # Get current frame and face
-            video_frame = video_frames[min(i, len(video_frames)-1)].copy()
-            face = faces[i, 0]  # [3, H, W]
-            box = boxes[i, 0]  # [4,]
-            affine_matrix = affine_matrices[i, 0]  # [2, 3]
-            
-            # Skip if invalid face or box
-            if face.shape[0] == 0 or box.sum() == 0:
-                out_frames.append(video_frame)
-                continue
-            
-            # Calculate face size from box
-            x1, y1, x2, y2 = box
+        for index, face in enumerate(tqdm.tqdm(faces)):
+            x1, y1, x2, y2 = boxes[index]
             height = int(y2 - y1)
             width = int(x2 - x1)
-            
-            # Convert face to torch tensor if it's numpy array
-            if isinstance(face, np.ndarray):
-                face = torch.from_numpy(face)
-            
-            # Resize face to match original face box size
             face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
-
-            # Convert channels and normalize
             face = rearrange(face, "c h w -> h w c")
             face = (face / 2 + 0.5).clamp(0, 1)
             face = (face * 255).to(torch.uint8).cpu().numpy()
-
-            # 调试：保存前3帧的中间结果
-            if i < 3:
-                debug_dir = "debug_frames"
-                os.makedirs(debug_dir, exist_ok=True)
-                
-                print(f"\nDebug info for frame {i}:")
-                print(f"Original frame shape: {video_frame.shape}, dtype: {video_frame.dtype}, range: [{video_frame.min()}, {video_frame.max()}]")
-                print(f"Face shape: {face.shape}, dtype: {face.dtype}, range: [{face.min()}, {face.max()}]")
-                print(f"Box coordinates: x1={x1:.1f}, y1={y1:.1f}, x2={x2:.1f}, y2={y2:.1f}")
-                print(f"Face size: {width}x{height}")
-                print(f"Affine matrix:\n{affine_matrix}")
-                
-                # 保存原始视频帧
-                cv2.imwrite(f"{debug_dir}/frame_{i}_1_original.jpg", cv2.cvtColor(video_frame, cv2.COLOR_RGB2BGR))
-                
-                # 保存生成的人脸
-                cv2.imwrite(f"{debug_dir}/frame_{i}_2_generated_face.jpg", cv2.cvtColor(face, cv2.COLOR_RGB2BGR))
-
-                # 保存恢复前的帧
-                cv2.imwrite(f"{debug_dir}/frame_{i}_3_before_restore.jpg", cv2.cvtColor(video_frame, cv2.COLOR_RGB2BGR))
-                
-                # 保存原始生成人脸恢复的结果（面部增强之前）
-                print("\nRestoring face before enhancement:")
-                original_restored = self.image_processor.restorer.restore_img(video_frame.copy(), face.copy(), affine_matrix)
-                print(f"Original restored shape: {original_restored.shape}, dtype: {original_restored.dtype}, range: [{original_restored.min()}, {original_restored.max()}]")
-                cv2.imwrite(f"{debug_dir}/frame_{i}_4_restored_before_enhance.jpg", cv2.cvtColor(original_restored, cv2.COLOR_RGB2BGR))
-
-            # 如果启用了面部增强，对人脸进行增强
-            if opt_face_enhancer is not None:
-                if i < 3:
-                    print("\nEnhancing face:")
-                face = opt_face_enhancer.enhance(face)
-                if i < 3:
-                    print(f"Enhanced face shape: {face.shape}, dtype: {face.dtype}, range: [{face.min()}, {face.max()}]")
-                    # 保存增强后的人脸
-                    cv2.imwrite(f"{debug_dir}/frame_{i}_5_enhanced_face.jpg", cv2.cvtColor(face, cv2.COLOR_RGB2BGR))
             
-            # Restore face back to original frame
-            if i < 3:
-                print("\nRestoring enhanced face:")
-            out_frame = self.image_processor.restorer.restore_img(video_frame, face, affine_matrix)
-            if i < 3:
-                print(f"Final restored shape: {out_frame.shape}, dtype: {out_frame.dtype}, range: [{out_frame.min()}, {out_frame.max()}]")
-                # 保存最终结果
-                cv2.imwrite(f"{debug_dir}/frame_{i}_6_final_result.jpg", cv2.cvtColor(out_frame, cv2.COLOR_RGB2BGR))
-
+            # Check input face data type
+            if face.dtype != np.uint8:
+                print(f"Warning: Input face dtype is {face.dtype}, converting to uint8")
+                face = np.clip(face, 0, 255).astype(np.uint8)
+            
+            # Apply face enhancement before restoration
+            try:
+                enhanced_face = self.face_enhancer.enhance(face)
+                # Check enhanced face data type
+                if enhanced_face is None:
+                    print(f"Warning: Face enhancement failed for frame {index}, using original face")
+                    enhanced_face = face
+                elif enhanced_face.dtype != np.uint8:
+                    print(f"Warning: Enhanced face dtype is {enhanced_face.dtype}, converting to uint8")
+                    enhanced_face = np.clip(enhanced_face, 0, 255).astype(np.uint8)
+                
+                # Verify shape consistency
+                if enhanced_face.shape != face.shape:
+                    print(f"Warning: Enhanced face shape {enhanced_face.shape} != original shape {face.shape}, resizing")
+                    enhanced_face = cv2.resize(enhanced_face, (width, height), interpolation=cv2.INTER_LANCZOS4)
+            except Exception as e:
+                print(f"Warning: Face enhancement failed with error: {str(e)}, using original face")
+                enhanced_face = face
+            
+            out_frame = self.image_processor.restorer.restore_img(video_frames[index], enhanced_face, affine_matrices[index])
             out_frames.append(out_frame)
-
         return np.stack(out_frames, axis=0)
 
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
@@ -413,13 +358,6 @@ class LipsyncPipeline(DiffusionPipeline):
         audio_sample_rate: int = 16000,
         height: Optional[int] = None,
         width: Optional[int] = None,
-        face_upscale_factor: float = 1.0,  # 控制面部放大因子
-        face_enhance: bool = False,  # 是否启用面部增强
-        face_enhance_method: str = 'gfpgan',  # 面部增强方法
-        face_enhance_strength: float = 0.8,  # 面部增强强度
-        mouth_protection: bool = True,  # 是否保护嘴唇区域
-        mouth_protection_strength: float = 0.8,  # 嘴唇保护强度
-        high_quality: bool = False,  # 控制视频质量
         num_inference_steps: int = 20,
         guidance_scale: float = 1.5,
         weight_dtype: Optional[torch.dtype] = torch.float16,
@@ -440,25 +378,7 @@ class LipsyncPipeline(DiffusionPipeline):
         batch_size = 1
         device = self._execution_device
         mask_image = load_fixed_mask(height, mask_image_path)
-        # 设置面部放大因子
         self.image_processor = ImageProcessor(height, mask=mask, device="cuda", mask_image=mask_image)
-        # 创建新的 AlignRestore 实例，确保使用正确的 upscale_factor
-        self.image_processor.restorer = AlignRestore(upscale_factor=face_upscale_factor)
-        
-        # 设置面部增强器
-        self.face_enhancer = None
-        if face_enhance:
-            self.face_enhancer = FaceEnhancer(
-                enhancement_method=face_enhance_method,
-                enhancement_strength=face_enhance_strength,
-                device=device,
-                enable=True,
-                mouth_protection=mouth_protection,
-                mouth_protection_strength=mouth_protection_strength
-            )
-            print(f"面部增强已启用 - 方法: {face_enhance_method}, 强度: {face_enhance_strength}")
-            print(f"嘴唇保护: {'已启用' if mouth_protection else '已禁用'}, 保护强度: {mouth_protection_strength}")
-            
         self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 
         # 1. Default height and width to unet
@@ -583,27 +503,9 @@ class LipsyncPipeline(DiffusionPipeline):
             synced_video_frames.append(decoded_latents)
             # masked_video_frames.append(masked_pixel_values)
 
-        # 将PyTorch张量转换为numpy数组以匹配新的restore_video参数格式
-        faces_array = torch.cat(synced_video_frames).cpu().numpy()
-        faces_array = np.expand_dims(faces_array, axis=1)  # [T, 1, C, H, W]
-        
-        boxes_array = np.array(boxes)
-        boxes_array = np.expand_dims(boxes_array, axis=1)  # [T, 1, 4]
-        
-        affine_matrices_array = np.array(affine_matrices)
-        affine_matrices_array = np.expand_dims(affine_matrices_array, axis=1)  # [T, 1, 2, 3]
-        
-        # 使用新的restore_video方法
-        synced_video_frames = self.restore_video(
-            faces=faces_array,
-            boxes=boxes_array,
-            affine_matrices=affine_matrices_array,
-            source_video_path=video_path,
-            opt_face_enhancer=self.face_enhancer,
-            original_aspect_ratio=True
-        )
+        synced_video_frames = self.restore_video(torch.cat(synced_video_frames), video_frames, boxes, affine_matrices)
         # masked_video_frames = self.restore_video(
-        #     torch.cat(masked_video_frames), video_frames, boxes, video_path, self.face_enhancer
+        #     torch.cat(masked_video_frames), video_frames, boxes, affine_matrices
         # )
 
         audio_samples_remain_length = int(synced_video_frames.shape[0] / video_fps * audio_sample_rate)
@@ -617,43 +519,9 @@ class LipsyncPipeline(DiffusionPipeline):
             shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
 
-        # 根据是否开启高质量选项使用不同的视频写入方式
-        if high_quality:
-            # 使用ffmpeg直接将帧写入视频，而不是OpenCV
-            temp_video_path = os.path.join(temp_dir, "video.mp4")
-            temp_frames_dir = os.path.join(temp_dir, "frames")
-            os.makedirs(temp_frames_dir, exist_ok=True)
-            
-            print(f"Saving {len(synced_video_frames)} frames...")
-            # 先保存所有帧为图像文件
-            for i, frame in enumerate(synced_video_frames):
-                # synced_video_frames 现在是RGB格式，需要转换为BGR给OpenCV
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
-                cv2.imwrite(frame_path, frame_bgr)
-            
-            # 写入音频
-            audio_path = os.path.join(temp_dir, "audio.wav")
-            sf.write(audio_path, audio_samples, audio_sample_rate)
-            
-            # 使用ffmpeg将图像序列转换为视频
-            imgs_path = os.path.join(temp_frames_dir, "frame_%04d.png")
-            temp_video_no_audio = os.path.join(temp_dir, "video_no_audio.mp4")
-            
-            # 先创建没有音频的视频
-            ffmpeg_cmd = (f"ffmpeg -y -loglevel error -framerate {video_fps} -i {imgs_path} "
-                          f"-c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p {temp_video_no_audio}")
-            print("Running ffmpeg to create video...")
-            subprocess.run(ffmpeg_cmd, shell=True)
-            
-            # 添加音频到视频
-            ffmpeg_audio_cmd = (f"ffmpeg -y -loglevel error -i {temp_video_no_audio} "
-                              f"-i {audio_path} -c:v copy -c:a aac -b:a 320k -shortest {video_out_path}")
-            print("Adding audio to video...")
-            subprocess.run(ffmpeg_audio_cmd, shell=True)
-        else:
-            # 使用原来的方式处理，写入视频函数会自动处理RGB->BGR转换
-            write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=video_fps)
+        write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=25)
+        # write_video(video_mask_path, masked_video_frames, fps=25)
+
         sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
 
         command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
