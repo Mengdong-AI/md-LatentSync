@@ -96,17 +96,29 @@ class AlignRestore(object):
         inv_restored = cv2.warpAffine(face, inverse_affine, (w_up, h_up), flags=cv2.INTER_LANCZOS4)
         mask = np.ones((self.face_size[1], self.face_size[0]), dtype=np.float32)
         inv_mask = cv2.warpAffine(mask, inverse_affine, (w_up, h_up))
-        inv_mask_erosion = cv2.erode(
-            inv_mask, np.ones((int(2 * self.upscale_factor), int(2 * self.upscale_factor)), np.uint8)
-        )
+        
+        # 减小侵蚀核的大小，使边缘更锐利
+        erosion_kernel = np.ones((int(1 * self.upscale_factor), int(1 * self.upscale_factor)), np.uint8)
+        inv_mask_erosion = cv2.erode(inv_mask, erosion_kernel)
+        
         pasted_face = inv_mask_erosion[:, :, None] * inv_restored
         total_face_area = np.sum(inv_mask_erosion)
-        w_edge = int(total_face_area**0.5) // 20
-        erosion_radius = w_edge * 2
+        
+        # 减小边缘模糊的范围
+        w_edge = int(total_face_area**0.5) // 40  # 从20改为40，减小边缘范围
+        erosion_radius = w_edge   # 从 w_edge * 2 改为 w_edge
         inv_mask_center = cv2.erode(inv_mask_erosion, np.ones((erosion_radius, erosion_radius), np.uint8))
-        blur_size = w_edge * 2
-        inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size + 1, blur_size + 1), 0)
+        
+        # 减小高斯模糊的范围
+        blur_size = w_edge   # 从 w_edge * 2 改为 w_edge
+        if blur_size % 2 == 0:  # 确保 blur_size 是奇数
+            blur_size += 1
+        inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size, blur_size), 0)
+        
+        # 调整边缘过渡的锐利度
+        inv_soft_mask = np.clip(inv_soft_mask * 1.2, 0, 1)  # 增加对比度使边缘更锐利
         inv_soft_mask = inv_soft_mask[:, :, None]
+        
         upsample_img = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
         if np.max(upsample_img) > 256:
             upsample_img = upsample_img.astype(np.uint16)
