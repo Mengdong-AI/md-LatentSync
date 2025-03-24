@@ -374,15 +374,17 @@ class LipsyncPipeline(DiffusionPipeline):
             start_idx: 起始帧索引
             
         Returns:
-            list of (frame_idx, face, box, affine_matrix, landmarks)
+            list of (frame_idx, face, box, affine_matrix, landmarks)  # 修改：添加 landmarks
         """
         results = []
         try:
             for i, frame in enumerate(batch_frames):
                 frame_idx = start_idx + i
                 try:
-                    face, box, affine_matrix, landmarks = self.image_processor.affine_transform(frame)
-                    results.append((frame_idx, face, box, affine_matrix, landmarks))
+                    face, box, affine_matrix = self.image_processor.affine_transform(frame)
+                    # 获取人脸关键点
+                    landmarks = self.image_processor.detect_facial_landmarks(frame) if face is not None else None
+                    results.append((frame_idx, face, box, affine_matrix, landmarks))  # 修改：添加 landmarks
                     
                     # 每处理一帧就清理一次 CUDA 缓存
                     if torch.cuda.is_available():
@@ -391,7 +393,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 except Exception as e:
                     print(f"处理第 {frame_idx} 帧时出错: {str(e)}")
                     # 使用空结果作为占位符
-                    results.append((frame_idx, None, None, None, None))
+                    results.append((frame_idx, None, None, None, None))  # 修改：添加 None 作为 landmarks
             
             return results
             

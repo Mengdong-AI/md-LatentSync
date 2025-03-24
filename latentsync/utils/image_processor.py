@@ -158,11 +158,11 @@ class ImageProcessor:
         box = [0, 0, face.shape[1], face.shape[0]]  # x1, y1, x2, y2
         face = cv2.resize(face, (self.resolution, self.resolution), interpolation=cv2.INTER_LANCZOS4)
         face = rearrange(torch.from_numpy(face), "h w c -> c h w")
-        return face, box, affine_matrix, lm68
+        return face, box, affine_matrix
 
     def preprocess_fixed_mask_image(self, image: torch.Tensor, affine_transform=False):
         if affine_transform:
-            image, _, _, _ = self.affine_transform(image)
+            image, _, _ = self.affine_transform(image)
         else:
             image = self.resize(image)
         pixel_values = self.normalize(image / 255.0)
@@ -351,7 +351,7 @@ if __name__ == "__main__":
 
         frame = rearrange(torch.Tensor(frame).type(torch.uint8), "h w c ->  c h w")
         # face, masked_face, _ = image_processor.preprocess_fixed_mask_image(frame, affine_transform=True)
-        face, _, _, _ = image_processor.affine_transform(frame)
+        face, _, _ = image_processor.affine_transform(frame)
 
         break
 
