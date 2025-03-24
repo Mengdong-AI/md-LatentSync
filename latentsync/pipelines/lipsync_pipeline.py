@@ -595,53 +595,33 @@ class LipsyncPipeline(DiffusionPipeline):
             return video_frames
             
         try:
-            print(f"\n开始处理 {len(video_frames)} 帧视频...")
+            total_frames = len(video_frames)
+            print(f"\n开始处理 {total_frames} 帧视频...")
+            
             # 提交所有帧进行处理
-            for i in range(len(video_frames)):
+            for i in range(total_frames):
                 landmarks = face_landmarks[i] if face_landmarks is not None else None
                 self.batch_face_enhancer.process_frame(i, video_frames[i], landmarks)
-                if i % 10 == 0:  # 每10帧打印一次进度
-                    print(f"已提交 {i+1}/{len(video_frames)} 帧进行处理")
-            
-            print("所有帧已提交，开始收集处理结果...")
+                if i % 10 == 0:
+                    print(f"已提交 {i+1}/{total_frames} 帧")
             
             # 收集处理结果
             enhanced_frames = []
-            frame_indices = []
+            processed_count = 0
             
-            # 使用超时机制等待结果
-            timeout = 1.0  # 1秒超时
-            max_retries = 3  # 最大重试次数
-            total_retries = max_retries
-            
-            while len(enhanced_frames) < len(video_frames):
+            while processed_count < total_frames:
                 try:
-                    idx, frame = self.batch_face_enhancer.get_result(timeout=timeout)
+                    idx, frame = self.batch_face_enhancer.get_result(timeout=1.0)
                     if idx is not None and frame is not None:
                         enhanced_frames.append((idx, frame))
-                        frame_indices.append(idx)
-                        if len(enhanced_frames) % 10 == 0:  # 每收集10帧打印一次进度
-                            print(f"已收集 {len(enhanced_frames)}/{len(video_frames)} 帧处理结果")
-                    else:
-                        print(f"警告：收到空结果，idx={idx}")
-                        
+                        processed_count += 1
+                        if processed_count % 10 == 0:
+                            print(f"已处理 {processed_count}/{total_frames} 帧")
                 except Exception as e:
-                    print(f"获取增强结果时出错: {str(e)}")
-                    if len(enhanced_frames) == len(video_frames):
-                        break
-                    if total_retries <= 0:
-                        print(f"达到最大重试次数，返回原始帧。已处理 {len(enhanced_frames)}/{len(video_frames)} 帧")
-                        # 返回未处理的原始帧
-                        for i in range(len(video_frames)):
-                            if i not in frame_indices:
-                                print(f"使用原始帧 {i}")
-                                enhanced_frames.append((i, video_frames[i]))
-                        break
-                    total_retries -= 1
-                    print(f"重试剩余次数: {total_retries}")
+                    print(f"获取结果时出错: {str(e)}")
                     continue
             
-            print(f"处理完成，共收集到 {len(enhanced_frames)} 帧结果")
+            print(f"处理完成，共处理 {processed_count} 帧")
             
             # 按帧索引排序结果
             enhanced_frames.sort(key=lambda x: x[0])
