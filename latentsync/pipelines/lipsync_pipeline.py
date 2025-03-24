@@ -355,7 +355,7 @@ class LipsyncPipeline(DiffusionPipeline):
             # 确保清理 CUDA 缓存
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            
+
             faces = torch.stack(faces)
             return faces, boxes, affine_matrices, face_landmarks  # 修改：返回关键点
             
@@ -374,17 +374,15 @@ class LipsyncPipeline(DiffusionPipeline):
             start_idx: 起始帧索引
             
         Returns:
-            list of (frame_idx, face, box, affine_matrix, landmarks)  # 修改：添加 landmarks
+            list of (frame_idx, face, box, affine_matrix, landmarks)
         """
         results = []
         try:
             for i, frame in enumerate(batch_frames):
                 frame_idx = start_idx + i
                 try:
-                    face, box, affine_matrix = self.image_processor.affine_transform(frame)
-                    # 获取人脸关键点
-                    landmarks = self.image_processor.detect_facial_landmarks(frame) if face is not None else None
-                    results.append((frame_idx, face, box, affine_matrix, landmarks))  # 修改：添加 landmarks
+                    face, box, affine_matrix, landmarks = self.image_processor.affine_transform(frame)
+                    results.append((frame_idx, face, box, affine_matrix, landmarks))
                     
                     # 每处理一帧就清理一次 CUDA 缓存
                     if torch.cuda.is_available():
@@ -393,7 +391,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 except Exception as e:
                     print(f"处理第 {frame_idx} 帧时出错: {str(e)}")
                     # 使用空结果作为占位符
-                    results.append((frame_idx, None, None, None, None))  # 修改：添加 None 作为 landmarks
+                    results.append((frame_idx, None, None, None, None))
             
             return results
             
@@ -453,8 +451,8 @@ class LipsyncPipeline(DiffusionPipeline):
                         idx, enhanced_face = self.batch_face_enhancer.get_result(timeout=timeout)
                         # 验证增强后的人脸
                         if enhanced_face is None:
-                            print(f"Warning: Face enhancement failed for frame {idx}, using original face")
-                            enhanced_face = face_frames[idx]
+                                    print(f"Warning: Face enhancement failed for frame {idx}, using original face")
+                                    enhanced_face = face_frames[idx]
                         elif enhanced_face.dtype != np.uint8:
                             enhanced_face = np.clip(enhanced_face, 0, 255).astype(np.uint8)
                         
