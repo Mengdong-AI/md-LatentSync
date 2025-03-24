@@ -4,6 +4,7 @@ import numpy as np
 from typing import Union, Optional, Tuple, List
 import warnings
 import onnxruntime
+import torch
 
 class FaceEnhancer:
     """人脸增强器，支持使用ONNX模型的GPEN，GFPGAN和CodeFormer三种增强方式"""
@@ -48,6 +49,16 @@ class FaceEnhancer:
         self.output_name = None
         self.resolution = None
         
+        # 添加调试相关属性
+        self.debug_dir = 'debug_frames'
+        self.debug_count = 0
+        self.max_debug_frames = 3
+        
+        # 创建调试目录
+        if not os.path.exists(self.debug_dir):
+            os.makedirs(self.debug_dir)
+            print(f"创建调试目录: {self.debug_dir}")
+        
         # 尝试加载ONNX模型
         if self.enable:
             self._load_onnx_model()
@@ -83,18 +94,21 @@ class FaceEnhancer:
             # 配置 CUDA Provider 选项
             provider_options = {
                 "cudnn_conv_algo_search": "EXHAUSTIVE",  # 使用穷举搜索找到最快的卷积算法
-                "cuda_mem_limit": 2 * 1024 * 1024 * 1024,  # 2GB GPU 内存限制
-                "arena_extend_strategy": "kNextPowerOfTwo",
-                "do_copy_in_default_stream": True,
+                "device_id": 0,  # 使用第一个 GPU
+                "gpu_mem_limit": 2 * 1024 * 1024 * 1024,  # 2GB GPU 内存限制
             }
             
             # 根据设备选择执行提供程序
             providers = []
             if str(self.device).lower() == 'cuda':
-                providers = [
-                    ("CUDAExecutionProvider", provider_options),
-                    "CPUExecutionProvider"
-                ]
+                if torch.cuda.is_available():  # 确保 CUDA 可用
+                    providers = [
+                        ("CUDAExecutionProvider", provider_options),
+                        "CPUExecutionProvider"
+                    ]
+                else:
+                    print("CUDA不可用，回退到CPU执行")
+                    providers = ["CPUExecutionProvider"]
             else:
                 providers = ["CPUExecutionProvider"]
             
@@ -234,12 +248,24 @@ class FaceEnhancer:
         img = img.copy()
         
         try:
+            # 保存调试图像（前3帧）
+            if self.debug_count < self.max_debug_frames:
+                debug_prefix = f"{self.enhancement_method}_frame_{self.debug_count}"
+                # 保存原始图像
+                cv2.imwrite(os.path.join(self.debug_dir, f"{debug_prefix}_before.png"), img)
+                print(f"保存原始图像: {debug_prefix}_before.png")
+            
             # 预处理图像
             input_data = self.preprocess(img)
             
-            # 运行ONNX推理
+            # 获取模型输出形状
+            output_shape = self.session.get_outputs()[0].shape
+            if output_shape[0] == -1:  # 如果批次维度是动态的
+                output_shape = list(input_data.shape)
+            
+            # 运行推理
             if self.enhancement_method == 'codeformer':
-                # CodeFormer需要两个输入：x（图像）和w（权重，必须是double类型）
+                # CodeFormer需要两个输入
                 w = np.array([self.enhancement_strength], dtype=np.float64)
                 output = self.session.run(None, {
                     'x': input_data,
@@ -251,79 +277,155 @@ class FaceEnhancer:
             # 后处理输出
             enhanced_img = self.postprocess(output)
             
-            # 根据增强强度混合原图和增强结果
+            # 使用 CUDA 加速图像混合
             if self.enhancement_strength < 1.0:
                 # 调整原图大小以匹配增强结果
                 original_resized = cv2.resize(img, (enhanced_img.shape[1], enhanced_img.shape[0]), 
-                                             interpolation=cv2.INTER_LANCZOS4)
-                enhanced_img = cv2.addWeighted(enhanced_img, self.enhancement_strength, 
-                                              original_resized, 1.0 - self.enhancement_strength, 0)
-            
-            # 如果启用嘴唇保护并有人脸关键点，保留原始嘴唇区域
-            if self.mouth_protection and face_landmarks is not None and len(face_landmarks) > 0:
-                try:
-                    # 创建嘴唇区域遮罩
-                    mask = np.zeros_like(enhanced_img)
-                    
-                    # 对每个人脸
-                    for landmarks in face_landmarks:
-                        # 获取嘴唇关键点（通常是最后的点）
-                        try:
-                            # 对于68点模型，嘴唇点是48-68
-                            if len(landmarks) >= 68:
-                                mouth_points = landmarks[48:68]
-                            # 如果是简化的关键点模型
-                            elif len(landmarks) >= 20:
-                                mouth_points = landmarks[-8:]  # 取最后8个点作为嘴唇
-                            else:
-                                # 使用固定区域
-                                h, w = enhanced_img.shape[:2]
-                                mouth_points = np.array([
-                                    [w//2 - w//8, h//2 + h//8],
-                                    [w//2 + w//8, h//2 + h//8],
-                                    [w//2 + w//8, h//2 + h//4],
-                                    [w//2 - w//8, h//2 + h//4]
-                                ])
-                        except:
-                            # 如果出错，使用固定区域
-                            h, w = enhanced_img.shape[:2]
-                            mouth_points = np.array([
-                                [w//2 - w//8, h//2 + h//8],
-                                [w//2 + w//8, h//2 + h//8],
-                                [w//2 + w//8, h//2 + h//4],
-                                [w//2 - w//8, h//2 + h//4]
-                            ])
-                        
-                        # 创建嘴唇区域多边形
-                        cv2.fillPoly(mask, [np.array(mouth_points, dtype=np.int32)], (255, 255, 255))
-                        
-                        # 扩大嘴唇区域
-                        kernel = np.ones((15, 15), np.uint8)
-                        mask = cv2.dilate(mask, kernel, iterations=1)
-                    
-                    # 应用遮罩，保留原始嘴唇区域
-                    # 缩放原始图像以匹配增强后的图像大小
-                    original_resized = cv2.resize(img, (enhanced_img.shape[1], enhanced_img.shape[0]), 
-                                                interpolation=cv2.INTER_LANCZOS4)
-                    
-                    # 创建嘴唇保护混合
-                    if self.mouth_protection_strength < 1.0:
-                        # 部分保护，混合原始和增强的嘴唇区域
-                        mask_float = mask.astype(np.float32) / 255.0
-                        mask_strength = mask_float * self.mouth_protection_strength
-                        for c in range(3):
-                            enhanced_img[:,:,c] = (1 - mask_strength[:,:,c]) * enhanced_img[:,:,c] + \
-                                                 mask_strength[:,:,c] * original_resized[:,:,c]
-                    else:
-                        # 完全保护，直接替换
-                        mask = mask.astype(bool)
-                        enhanced_img[mask] = original_resized[mask]
+                                           interpolation=cv2.INTER_LINEAR)
                 
-                except Exception as e:
-                    print(f"应用嘴唇保护时出错: {str(e)}")
+                if str(self.device).lower() == 'cuda' and torch.cuda.is_available():
+                    # 使用 CUDA 进行图像混合
+                    enhanced_tensor = torch.from_numpy(enhanced_img).cuda()
+                    original_tensor = torch.from_numpy(original_resized).cuda()
+                    
+                    enhanced_tensor = enhanced_tensor * self.enhancement_strength + \
+                                    original_tensor * (1.0 - self.enhancement_strength)
+                    
+                    enhanced_img = enhanced_tensor.cpu().numpy()
+                else:
+                    # CPU 混合
+                    enhanced_img = cv2.addWeighted(enhanced_img, self.enhancement_strength,
+                                                 original_resized, 1.0 - self.enhancement_strength, 0)
+            
+            # 优化嘴唇保护处理
+            if self.mouth_protection and face_landmarks is not None and len(face_landmarks) > 0:
+                enhanced_img = self._apply_mouth_protection(enhanced_img, img, face_landmarks)
+            
+            # 清理 CUDA 缓存
+            if str(self.device).lower() == 'cuda' and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # 保存增强后的图像（前3帧）
+            if self.debug_count < self.max_debug_frames:
+                # 保存增强后的图像
+                cv2.imwrite(os.path.join(self.debug_dir, f"{debug_prefix}_after.png"), enhanced_img)
+                print(f"保存增强后图像: {debug_prefix}_after.png")
+                
+                # 如果有嘴唇保护，也保存嘴唇遮罩
+                if self.mouth_protection and face_landmarks is not None and len(face_landmarks) > 0:
+                    mask = np.zeros_like(enhanced_img)
+                    for landmarks in face_landmarks:
+                        mouth_points = self._get_mouth_points(landmarks, enhanced_img.shape)
+                        cv2.fillPoly(mask, [np.array(mouth_points, dtype=np.int32)], (255, 255, 255))
+                    cv2.imwrite(os.path.join(self.debug_dir, f"{debug_prefix}_mouth_mask.png"), mask)
+                    print(f"保存嘴唇遮罩: {debug_prefix}_mouth_mask.png")
+                
+                self.debug_count += 1
             
             return enhanced_img
             
         except Exception as e:
             print(f"面部增强过程出错: {str(e)}")
-            return img 
+            return img
+            
+    def _apply_mouth_protection(self, enhanced_img, original_img, face_landmarks):
+        """应用嘴唇保护
+        
+        Args:
+            enhanced_img: 增强后的图像
+            original_img: 原始图像
+            face_landmarks: 人脸关键点
+            
+        Returns:
+            处理后的图像
+        """
+        try:
+            # 创建嘴唇区域遮罩
+            mask = np.zeros_like(enhanced_img)
+            
+            # 对每个人脸处理嘴唇区域
+            for landmarks in face_landmarks:
+                mouth_points = self._get_mouth_points(landmarks, enhanced_img.shape)
+                
+                # 创建嘴唇区域多边形
+                cv2.fillPoly(mask, [np.array(mouth_points, dtype=np.int32)], (255, 255, 255))
+                
+                # 扩大嘴唇区域
+                kernel = np.ones((15, 15), np.uint8)
+                mask = cv2.dilate(mask, kernel, iterations=1)
+            
+            # 缩放原始图像以匹配增强后的图像大小
+            original_resized = cv2.resize(original_img, 
+                                        (enhanced_img.shape[1], enhanced_img.shape[0]),
+                                        interpolation=cv2.INTER_LINEAR)
+            
+            if str(self.device).lower() == 'cuda' and torch.cuda.is_available():
+                # 使用 CUDA 进行图像混合
+                mask_tensor = torch.from_numpy(mask).cuda().float() / 255.0
+                enhanced_tensor = torch.from_numpy(enhanced_img).cuda()
+                original_tensor = torch.from_numpy(original_resized).cuda()
+                
+                if self.mouth_protection_strength < 1.0:
+                    # 部分保护
+                    mask_strength = mask_tensor * self.mouth_protection_strength
+                    result = (1 - mask_strength) * enhanced_tensor + mask_strength * original_tensor
+                else:
+                    # 完全保护
+                    result = torch.where(mask_tensor > 0, original_tensor, enhanced_tensor)
+                
+                enhanced_img = result.cpu().numpy()
+            else:
+                # CPU 处理
+                if self.mouth_protection_strength < 1.0:
+                    # 部分保护
+                    mask_float = mask.astype(np.float32) / 255.0
+                    mask_strength = mask_float * self.mouth_protection_strength
+                    for c in range(3):
+                        enhanced_img[:,:,c] = (1 - mask_strength[:,:,c]) * enhanced_img[:,:,c] + \
+                                             mask_strength[:,:,c] * original_resized[:,:,c]
+                else:
+                    # 完全保护
+                    mask = mask.astype(bool)
+                    enhanced_img[mask] = original_resized[mask]
+            
+            return enhanced_img
+            
+        except Exception as e:
+            print(f"应用嘴唇保护时出错: {str(e)}")
+            return enhanced_img
+            
+    def _get_mouth_points(self, landmarks, img_shape):
+        """获取嘴唇关键点
+        
+        Args:
+            landmarks: 人脸关键点
+            img_shape: 图像形状
+            
+        Returns:
+            嘴唇区域的关键点
+        """
+        try:
+            # 对于68点模型，嘴唇点是48-68
+            if len(landmarks) >= 68:
+                return landmarks[48:68]
+            # 如果是简化的关键点模型
+            elif len(landmarks) >= 20:
+                return landmarks[-8:]  # 取最后8个点作为嘴唇
+            else:
+                # 使用固定区域
+                h, w = img_shape[:2]
+                return np.array([
+                    [w//2 - w//8, h//2 + h//8],
+                    [w//2 + w//8, h//2 + h//8],
+                    [w//2 + w//8, h//2 + h//4],
+                    [w//2 - w//8, h//2 + h//4]
+                ])
+        except:
+            # 如果出错，使用固定区域
+            h, w = img_shape[:2]
+            return np.array([
+                [w//2 - w//8, h//2 + h//8],
+                [w//2 + w//8, h//2 + h//8],
+                [w//2 + w//8, h//2 + h//4],
+                [w//2 - w//8, h//2 + h//4]
+            ]) 
