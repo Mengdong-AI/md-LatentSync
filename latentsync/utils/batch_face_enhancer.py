@@ -74,6 +74,9 @@ class BatchFaceEnhancer:
     
     def _process_batches(self):
         """批处理主循环"""
+        print("启动批处理线程...")
+        batch_count = 0
+        
         while self.running:
             try:
                 # 收集一个批次的数据
@@ -84,17 +87,31 @@ class BatchFaceEnhancer:
                 # 记录等待时间
                 start_wait = time.time()
                 
-                for _ in range(self.batch_size):
-                    if not self.input_queue.empty():
-                        idx, frame, landmarks = self.input_queue.get()
-                        batch_data.append(frame)
-                        batch_landmarks.append(landmarks)
-                        batch_indices.append(idx)
-                    else:
-                        break
+                # 添加超时机制
+                timeout_count = 0
+                max_timeout = 10  # 最大等待10秒
+                
+                while len(batch_data) < self.batch_size and timeout_count < max_timeout:
+                    try:
+                        if not self.input_queue.empty():
+                            idx, frame, landmarks = self.input_queue.get(timeout=1.0)
+                            batch_data.append(frame)
+                            batch_landmarks.append(landmarks)
+                            batch_indices.append(idx)
+                            timeout_count = 0  # 重置超时计数
+                        else:
+                            timeout_count += 1
+                            time.sleep(0.1)  # 短暂等待
+                    except Exception as e:
+                        print(f"收集批次数据时出错: {str(e)}")
+                        timeout_count += 1
+                        continue
                 
                 if not batch_data:
                     continue
+                
+                batch_count += 1
+                print(f"\n开始处理第 {batch_count} 批数据，包含 {len(batch_data)} 帧...")
                 
                 # 记录队列等待时间
                 wait_time = time.time() - start_wait
@@ -111,23 +128,36 @@ class BatchFaceEnhancer:
                     worker_indices = batch_indices[i:i + self.num_workers]
                     
                     for j, (frame, landmarks, idx) in enumerate(zip(worker_batch, worker_landmarks, worker_indices)):
-                        enhancer = self.enhancers[j]
-                        future = self.executor.submit(enhancer.enhance, frame, landmarks)
-                        futures.append((future, idx))
+                        try:
+                            enhancer = self.enhancers[j]
+                            future = self.executor.submit(enhancer.enhance, frame, landmarks)
+                            futures.append((future, idx))
+                            print(f"提交帧 {idx} 到工作线程 {j}")
+                        except Exception as e:
+                            print(f"提交帧 {idx} 到工作线程时出错: {str(e)}")
+                            # 使用原始帧作为结果
+                            self.output_queue.put((idx, frame))
                 
                 # 收集结果并按顺序放入输出队列
+                successful_frames = 0
                 for future, idx in futures:
                     try:
-                        result = future.result()
+                        result = future.result(timeout=30)  # 设置30秒超时
                         self.output_queue.put((idx, result))
+                        successful_frames += 1
                         self.metrics['processed_frames'] += 1
+                        print(f"完成处理帧 {idx}")
                     except Exception as e:
                         print(f"处理帧 {idx} 时出错: {str(e)}")
+                        # 使用原始帧作为结果
                         self.output_queue.put((idx, batch_data[batch_indices.index(idx)]))
                 
                 # 记录处理时间
                 process_time = time.time() - start_process
                 self.metrics['processing_time'].append(process_time)
+                
+                print(f"第 {batch_count} 批处理完成，成功处理 {successful_frames}/{len(batch_data)} 帧")
+                print(f"处理时间: {process_time:.2f}秒，等待时间: {wait_time:.2f}秒")
                 
                 # 保持指标列表的大小
                 max_metrics = 100
@@ -135,9 +165,17 @@ class BatchFaceEnhancer:
                     if len(self.metrics[key]) > max_metrics:
                         self.metrics[key] = self.metrics[key][-max_metrics:]
                 
+                # 清理CUDA缓存
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
             except Exception as e:
                 print(f"批处理循环出错: {str(e)}")
+                # 短暂等待后继续
+                time.sleep(1)
                 continue
+        
+        print("批处理线程结束")
     
     def process_frame(self, frame_idx: int, frame: np.ndarray, landmarks=None) -> None:
         """提交一帧进行处理
