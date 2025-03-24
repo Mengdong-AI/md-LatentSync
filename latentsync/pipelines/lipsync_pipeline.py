@@ -143,9 +143,9 @@ class LipsyncPipeline(DiffusionPipeline):
             'device': 'cuda',
             'enhancement_strength': 0.5,
             'enable': True,
-            'batch_size': 4,
             'num_workers': 2,
-            'queue_size': 8
+            'mouth_protection': True,
+            'mouth_protection_strength': 0.8
         }
 
     def enable_vae_slicing(self):
@@ -402,7 +402,16 @@ class LipsyncPipeline(DiffusionPipeline):
                 torch.cuda.empty_cache()
             raise
 
-    def restore_video(self, faces: torch.Tensor, video_frames: np.ndarray, boxes: list, affine_matrices: list):
+    def restore_video(self, faces: torch.Tensor, video_frames: np.ndarray, boxes: list, affine_matrices: list, face_landmarks: list = None):
+        """还原视频帧
+        
+        Args:
+            faces: 处理后的人脸张量
+            video_frames: 原始视频帧
+            boxes: 人脸框列表
+            affine_matrices: 仿射变换矩阵列表
+            face_landmarks: 人脸关键点列表
+        """
         video_frames = video_frames[: len(faces)]
         out_frames = []
         print(f"Restoring {len(faces)} faces...")
@@ -436,14 +445,15 @@ class LipsyncPipeline(DiffusionPipeline):
             try:
                 # 提交所有人脸进行处理
                 for i, face in enumerate(face_frames):
-                    self.batch_face_enhancer.process_frame(i, face, None)
+                    landmarks = face_landmarks[i] if face_landmarks is not None else None
+                    self.batch_face_enhancer.process_frame(i, face, landmarks)
                 
                 # 收集增强结果
                 enhanced_faces = []
                 frame_indices = []
                 
                 # 使用超时机制等待结果
-                timeout = 1.0  # 1秒超时
+                timeout = 10.0  # 10秒超时
                 max_retries = 3  # 最大重试次数
                 
                 while len(enhanced_faces) < len(face_frames):
@@ -451,8 +461,8 @@ class LipsyncPipeline(DiffusionPipeline):
                         idx, enhanced_face = self.batch_face_enhancer.get_result(timeout=timeout)
                         # 验证增强后的人脸
                         if enhanced_face is None:
-                                    print(f"Warning: Face enhancement failed for frame {idx}, using original face")
-                                    enhanced_face = face_frames[idx]
+                            print(f"Warning: Face enhancement failed for frame {idx}, using original face")
+                            enhanced_face = face_frames[idx]
                         elif enhanced_face.dtype != np.uint8:
                             enhanced_face = np.clip(enhanced_face, 0, 255).astype(np.uint8)
                         
@@ -513,14 +523,6 @@ class LipsyncPipeline(DiffusionPipeline):
         print(f"总时间: {total_time:.2f}秒")
         print(f"平均每帧处理时间: {total_time/len(faces):.3f}秒")
         
-        if self.batch_face_enhancer is not None:
-            metrics = self.batch_face_enhancer.get_metrics()
-            if metrics:
-                print(f"\n批处理性能指标:")
-                print(f"处理的总帧数: {metrics['processed_frames']}")
-                print(f"平均处理时间: {metrics['avg_processing_time']:.3f}秒")
-                print(f"平均等待时间: {metrics['avg_queue_wait_time']:.3f}秒")
-                print(f"平均批大小: {metrics['avg_batch_size']:.1f}帧")
         
         return np.stack(out_frames, axis=0)
 
@@ -565,7 +567,7 @@ class LipsyncPipeline(DiffusionPipeline):
         Args:
             model_path: 模型路径
             **kwargs: 其他参数，包括 enhancement_method, enhancement_strength, 
-                     batch_size, num_workers, queue_size 等
+                     mouth_protection, mouth_protection_strength 等
         """
         # 更新配置
         self.face_enhancer_config.update(kwargs)
@@ -573,12 +575,12 @@ class LipsyncPipeline(DiffusionPipeline):
         # 创建批处理增强器
         self.batch_face_enhancer = BatchFaceEnhancer(
             model_path=model_path,
-            batch_size=self.face_enhancer_config['batch_size'],
-            num_workers=self.face_enhancer_config['num_workers'],
-            queue_size=self.face_enhancer_config['queue_size'],
-            device=self.face_enhancer_config['device'],
-            enhancement_method=self.face_enhancer_config['enhancement_method'],
-            enhancement_strength=self.face_enhancer_config['enhancement_strength']
+            num_workers=self.face_enhancer_config.get('num_workers', 2),
+            device=self.face_enhancer_config.get('device', 'cuda'),
+            enhancement_method=self.face_enhancer_config.get('enhancement_method', 'gpen'),
+            enhancement_strength=self.face_enhancer_config.get('enhancement_strength', 0.5),
+            mouth_protection=self.face_enhancer_config.get('mouth_protection', True),
+            mouth_protection_strength=self.face_enhancer_config.get('mouth_protection_strength', 0.8)
         )
 
     def enhance_video_frames(self, video_frames: np.ndarray, face_landmarks: list = None) -> np.ndarray:
@@ -803,13 +805,23 @@ class LipsyncPipeline(DiffusionPipeline):
                 mouth_protection_strength=mouth_protection_strength
             )
         
-        # 在处理视频帧时使用批处理增强
-        if face_enhance and self.batch_face_enhancer is not None:
-            video_frames = self.enhance_video_frames(video_frames, face_landmarks)
+        # # 在处理视频帧时使用批处理增强
+        # if face_enhance and self.batch_face_enhancer is not None:
+        #     video_frames = self.enhance_video_frames(video_frames, face_landmarks)
 
-        synced_video_frames = self.restore_video(torch.cat(synced_video_frames), video_frames, boxes, affine_matrices)
+        synced_video_frames = self.restore_video(
+            torch.cat(synced_video_frames), 
+            video_frames, 
+            boxes, 
+            affine_matrices,
+            face_landmarks
+        )
         # masked_video_frames = self.restore_video(
-        #     torch.cat(masked_video_frames), video_frames, boxes, affine_matrices
+        #     torch.cat(masked_video_frames), 
+        #     video_frames, 
+        #     boxes, 
+        #     affine_matrices,
+        #     face_landmarks
         # )
 
         audio_samples_remain_length = int(synced_video_frames.shape[0] / video_fps * audio_sample_rate)
