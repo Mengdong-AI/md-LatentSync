@@ -41,13 +41,19 @@ class FaceEnhancer:
         else:
             self.model_path = model_path
         
-        # 尝试加载ONNX模型
+        # 初始化 ONNX 会话相关属性
         self.session = None
+        self.io_binding = None
+        self.input_name = None
+        self.output_name = None
+        self.resolution = None
+        
+        # 尝试加载ONNX模型
         if self.enable:
             self._load_onnx_model()
     
     def _load_onnx_model(self):
-        """加载ONNX模型"""
+        """加载ONNX模型，使用优化的配置"""
         try:
             # 检查模型文件是否存在
             if not os.path.exists(self.model_path):
@@ -58,35 +64,95 @@ class FaceEnhancer:
 
             # 配置ONNX运行时选项
             session_options = onnxruntime.SessionOptions()
+            
+            # 启用所有图优化
             session_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
             
+            # 启用内存优化
+            session_options.enable_mem_pattern = True
+            session_options.enable_mem_reuse = True
+            
+            # 启用并行执行
+            session_options.execution_mode = onnxruntime.ExecutionMode.ORT_PARALLEL
+            
+            # 配置线程数
+            num_threads = min(os.cpu_count(), 4)  # 使用最多4个线程
+            session_options.intra_op_num_threads = num_threads
+            session_options.inter_op_num_threads = num_threads
+            
+            # 配置 CUDA Provider 选项
+            provider_options = {
+                "cudnn_conv_algo_search": "EXHAUSTIVE",  # 使用穷举搜索找到最快的卷积算法
+                "cuda_mem_limit": 2 * 1024 * 1024 * 1024,  # 2GB GPU 内存限制
+                "arena_extend_strategy": "kNextPowerOfTwo",
+                "do_copy_in_default_stream": True,
+            }
+            
             # 根据设备选择执行提供程序
-            providers = ["CPUExecutionProvider"]
+            providers = []
             if str(self.device).lower() == 'cuda':
-                providers = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "DEFAULT"}), "CPUExecutionProvider"]
+                providers = [
+                    ("CUDAExecutionProvider", provider_options),
+                    "CPUExecutionProvider"
+                ]
+            else:
+                providers = ["CPUExecutionProvider"]
             
             # 创建ONNX会话
             self.session = onnxruntime.InferenceSession(
-                self.model_path, 
-                sess_options=session_options, 
+                self.model_path,
+                sess_options=session_options,
                 providers=providers
             )
             
-            # 获取模型的输入尺寸
+            # 获取并缓存模型信息
             self.input_name = self.session.get_inputs()[0].name
+            self.output_name = self.session.get_outputs()[0].name
+            
+            # 获取输入尺寸
             input_shape = self.session.get_inputs()[0].shape
             if len(input_shape) >= 4:  # [batch, channels, height, width]
                 self.resolution = (input_shape[-1], input_shape[-2])
             else:
                 # 使用默认分辨率
                 self.resolution = (512, 512)
-                
+            
+            # 创建 IO Binding
+            self.io_binding = self.session.io_binding()
+            
+            # 预热模型
+            self._warmup_model()
+            
             print(f"{self.enhancement_method.upper()} ONNX模型加载成功，输入尺寸: {self.resolution}")
+            print(f"已启用优化配置：线程数={num_threads}，设备={self.device}")
             
         except Exception as e:
             print(f"加载ONNX模型失败: {str(e)}")
             self.session = None
             self.enable = False
+    
+    def _warmup_model(self):
+        """预热模型，运行几次推理以确保 CUDA kernels 被编译和缓存"""
+        try:
+            # 创建随机输入数据
+            dummy_input = np.random.randn(1, 3, *self.resolution).astype(np.float32)
+            
+            print(f"正在预热{self.enhancement_method.upper()}模型...")
+            for i in range(3):  # 运行3次预热
+                if self.enhancement_method == 'codeformer':
+                    w = np.array([self.enhancement_strength], dtype=np.float64)
+                    self.session.run(None, {
+                        'x': dummy_input,
+                        'w': w
+                    })
+                else:
+                    self.session.run(None, {self.input_name: dummy_input})
+                print(f"预热进度: {i+1}/3")
+            print("模型预热完成")
+            
+        except Exception as e:
+            print(f"模型预热失败: {str(e)}")
+            print("继续使用未预热的模型")
     
     def preprocess(self, img):
         """预处理图像

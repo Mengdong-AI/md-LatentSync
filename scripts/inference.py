@@ -18,7 +18,7 @@ from omegaconf import OmegaConf
 import torch
 from diffusers import AutoencoderKL, DDIMScheduler
 from latentsync.models.unet import UNet3DConditionModel
-from latentsync.pipelines.optimized_lipsync_pipeline import OptimizedLipsyncPipeline
+from latentsync.pipelines.lipsync_pipeline import LipsyncPipeline
 from accelerate.utils import set_seed
 from latentsync.whisper.audio2feature import Audio2Feature
 
@@ -36,8 +36,6 @@ def main(config, args):
     print(f"Input video path: {args.video_path}")
     print(f"Input audio path: {args.audio_path}")
     print(f"Loaded checkpoint path: {args.inference_ckpt_path}")
-    print(f"Using batch size: {args.batch_size}")
-    print(f"Using dtype: {dtype}")
 
     scheduler = DDIMScheduler.from_pretrained("configs")
 
@@ -67,7 +65,7 @@ def main(config, args):
 
     denoising_unet = denoising_unet.to(dtype=dtype)
 
-    pipeline = OptimizedLipsyncPipeline(
+    pipeline = LipsyncPipeline(
         vae=vae,
         audio_encoder=audio_encoder,
         denoising_unet=denoising_unet,
@@ -96,7 +94,6 @@ def main(config, args):
         num_frames=config.data.num_frames,
         num_inference_steps=args.inference_steps,
         guidance_scale=args.guidance_scale,
-        batch_size=args.batch_size,
         face_upscale_factor=args.face_upscale_factor,
         face_enhance=args.face_enhance,
         face_enhance_method=args.face_enhance_method,
@@ -120,8 +117,6 @@ if __name__ == "__main__":
     parser.add_argument("--video_out_path", type=str, required=True)
     parser.add_argument("--inference_steps", type=int, default=20)
     parser.add_argument("--guidance_scale", type=float, default=1.0)
-    parser.add_argument("--batch_size", type=int, default=4,
-                       help="Batch size for frame processing")
     parser.add_argument("--face_upscale_factor", type=float, default=1.0, 
                        help="Factor to upscale face during restoration (1.0-2.0)")
     parser.add_argument("--face_enhance", action="store_true",
