@@ -126,14 +126,18 @@ class AlignRestore(object):
         # 保存每秒第一帧的处理过程
         if self.frame_idx % self.fps == 0:
             second = self.frame_idx // self.fps
-            # 保存原始帧
-            cv2.imwrite(f"debug_frames/{second:04d}_1_original.jpg", input_img)
-            # 保存增强前的人脸
-            cv2.imwrite(f"debug_frames/{second:04d}_2_face_before.jpg", face)
+            # 保存原始帧 (BGR -> RGB)
+            cv2.imwrite(f"debug_frames/{second:04d}_1_original.jpg", cv2.cvtColor(input_img, cv2.COLOR_RGB2BGR))
+            # 保存增强前的人脸 (BGR -> RGB)
+            cv2.imwrite(f"debug_frames/{second:04d}_2_face_before.jpg", cv2.cvtColor(face, cv2.COLOR_RGB2BGR))
             # 保存遮罩
             cv2.imwrite(f"debug_frames/{second:04d}_3_mask.jpg", (inv_soft_mask * 255).astype(np.uint8))
-            # 保存增强后的人脸
-            cv2.imwrite(f"debug_frames/{second:04d}_4_face_after.jpg", inv_restored)
+            # 保存增强后的人脸 (BGR -> RGB)
+            cv2.imwrite(f"debug_frames/{second:04d}_4_face_after.jpg", cv2.cvtColor(inv_restored, cv2.COLOR_RGB2BGR))
+            # 保存最终合成结果 (BGR -> RGB)
+            final_result = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
+            final_result = np.clip(final_result, 0, 255).astype(np.uint8)
+            cv2.imwrite(f"debug_frames/{second:04d}_5_final.jpg", cv2.cvtColor(final_result, cv2.COLOR_RGB2BGR))
             
         self.frame_idx += 1
         

@@ -67,6 +67,11 @@ class ImageProcessor:
                 self.face_mesh = None
                 self.fa = None
 
+    def set_fps(self, fps):
+        """设置视频的fps，用于调试帧保存"""
+        if hasattr(self, 'restorer'):
+            self.restorer.set_fps(fps)
+
     def detect_facial_landmarks(self, image: np.ndarray):
         height, width, _ = image.shape
         results = self.face_mesh.process(image)
