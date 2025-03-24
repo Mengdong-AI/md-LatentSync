@@ -1,3 +1,4 @@
+import time
 import gradio as gr
 from pathlib import Path
 from scripts.inference import main
@@ -53,6 +54,8 @@ def process_video(
         )
 
         # Parse the arguments
+        start_time = time.time()
+        
         args = create_args(
             video_path, 
             audio_path, 
@@ -80,7 +83,9 @@ def process_video(
             config=config,
             args=args,
         )
-        print("Processing completed successfully.")
+        
+        end_time = time.time()
+        print(f"Processing completed successfully. Total time: {end_time - start_time:.2f} seconds")
         return output_path  # Ensure the output path is returned
     except Exception as e:
         import traceback
@@ -113,7 +118,7 @@ def create_args(
     parser.add_argument("--guidance_scale", type=float, default=1.0)
     parser.add_argument("--face_upscale_factor", type=float, default=1.0)
     parser.add_argument("--face_enhance", action="store_true")
-    parser.add_argument("--face_enhance_method", type=str, default="combined")
+    parser.add_argument("--face_enhance_method", type=str, default="gfpgan")
     parser.add_argument("--face_enhance_strength", type=float, default=0.8)
     parser.add_argument("--mouth_protection", action="store_true")
     parser.add_argument("--mouth_protection_strength", type=float, default=0.8)
@@ -135,8 +140,6 @@ def create_args(
         str(guidance_scale),
         "--face_upscale_factor",
         str(face_upscale_factor),
-        "--face_enhance_method",
-        face_enhance_method,
         "--face_enhance_strength",
         str(face_enhance_strength),
         "--mouth_protection_strength",
@@ -150,6 +153,7 @@ def create_args(
         args_list.append("--high_quality")
     if face_enhance:
         args_list.append("--face_enhance")
+        args_list.extend(["--face_enhance_method", face_enhance_method])
     if mouth_protection:
         args_list.append("--mouth_protection")
     
@@ -220,7 +224,8 @@ with gr.Blocks(title="LatentSync Video Processing") as demo:
                             choices=["gpen", "gfpgan", "codeformer"],
                             value="gfpgan",
                             label="Face Enhance Method",
-                            info="Select the method for face enhancement"
+                            info="Select the method for face enhancement",
+                            interactive=True
                         )
                         face_enhance_strength = gr.Slider(
                             minimum=0.0,

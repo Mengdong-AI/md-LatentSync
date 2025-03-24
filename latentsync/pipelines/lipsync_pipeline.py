@@ -6,6 +6,8 @@ import os
 import shutil
 from typing import Callable, List, Optional, Union
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
@@ -128,7 +130,7 @@ class LipsyncPipeline(DiffusionPipeline):
 
         # Initialize face enhancer
         self.face_enhancer = FaceEnhancer(
-            enhancement_method='gfpgan',
+            enhancement_method='gpen',
             device='cuda',
             enhancement_strength=0.5,
             enable=True
@@ -137,7 +139,7 @@ class LipsyncPipeline(DiffusionPipeline):
         # 初始化批处理人脸增强器
         self.batch_face_enhancer = None
         self.face_enhancer_config = {
-            'enhancement_method': 'gfpgan',
+            'enhancement_method': 'gpen',
             'device': 'cuda',
             'enhancement_strength': 0.5,
             'enable': True,
@@ -281,20 +283,136 @@ class LipsyncPipeline(DiffusionPipeline):
         faces = []
         boxes = []
         affine_matrices = []
+        face_landmarks = []  # 新增：存储人脸关键点
         print(f"Affine transforming {len(video_frames)} faces...")
-        for frame in tqdm.tqdm(video_frames):
-            face, box, affine_matrix = self.image_processor.affine_transform(frame)
-            faces.append(face)
-            boxes.append(box)
-            affine_matrices.append(affine_matrix)
-
-        faces = torch.stack(faces)
-        return faces, boxes, affine_matrices
+        
+        start_time = time.time()
+        
+        try:
+            # 创建线程池
+            num_workers = min(8, os.cpu_count() or 4)  # 最多8个线程
+            batch_size = 16  # 每批处理16帧
+            
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                # 将视频帧分成批次
+                batches = [video_frames[i:i + batch_size] for i in range(0, len(video_frames), batch_size)]
+                futures = []
+                
+                # 提交批次任务
+                for batch_idx, batch in enumerate(batches):
+                    future = executor.submit(self._process_affine_batch, batch, batch_idx * batch_size)
+                    futures.append(future)
+                
+                # 收集结果
+                results = []
+                for future in tqdm.tqdm(futures, desc="Processing batches"):
+                    try:
+                        batch_results = future.result()
+                        results.extend(batch_results)
+                            
+                    except Exception as e:
+                        print(f"处理批次时出错: {str(e)}")
+                        # 如果是 CUDA OOM，尝试减小批大小重试
+                        if "CUDA out of memory" in str(e):
+                            print("CUDA 内存不足，尝试减小批大小重试")
+                            batch_size = max(1, batch_size // 2)
+                            continue
+                
+                # 按帧索引排序结果
+                results.sort(key=lambda x: x[0])
+                
+                # 分离结果，处理空结果
+                valid_results = 0
+                for idx, face, box, affine_matrix, landmarks in results:  # 修改：添加 landmarks
+                    if face is not None and box is not None and affine_matrix is not None:
+                        faces.append(face)
+                        boxes.append(box)
+                        affine_matrices.append(affine_matrix)
+                        face_landmarks.append(landmarks)  # 新增：添加关键点
+                        valid_results += 1
+                    else:
+                        print(f"警告：第 {idx} 帧处理失败，将使用临近帧的结果")
+                        if valid_results > 0:
+                            # 使用最近的有效结果
+                            faces.append(faces[-1])
+                            boxes.append(boxes[-1])
+                            affine_matrices.append(affine_matrices[-1])
+                            face_landmarks.append(face_landmarks[-1])  # 新增：添加关键点
+                        else:
+                            # 如果没有有效结果，创建默认值
+                            print(f"错误：没有有效的处理结果用于第 {idx} 帧")
+                            raise RuntimeError(f"无法处理第 {idx} 帧")
+            
+            process_time = time.time() - start_time
+            print(f"\nAffine Transform 处理时间统计:")
+            print(f"总处理时间: {process_time:.2f}秒")
+            print(f"平均每帧处理时间: {process_time/len(video_frames):.3f}秒")
+            print(f"处理速度: {len(video_frames)/process_time:.1f} 帧/秒")
+            print(f"使用线程数: {num_workers}")
+            print(f"最终批大小: {batch_size}")
+            print(f"成功处理帧数: {valid_results}/{len(video_frames)}")
+            
+            # 确保清理 CUDA 缓存
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            faces = torch.stack(faces)
+            return faces, boxes, affine_matrices, face_landmarks  # 修改：返回关键点
+            
+        except Exception as e:
+            print(f"Affine Transform 处理失败: {str(e)}")
+            # 清理 CUDA 缓存
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            raise
+    
+    def _process_affine_batch(self, batch_frames, start_idx):
+        """处理一批视频帧的 affine transform
+        
+        Args:
+            batch_frames: 一批视频帧
+            start_idx: 起始帧索引
+            
+        Returns:
+            list of (frame_idx, face, box, affine_matrix, landmarks)  # 修改：添加 landmarks
+        """
+        results = []
+        try:
+            for i, frame in enumerate(batch_frames):
+                frame_idx = start_idx + i
+                try:
+                    face, box, affine_matrix = self.image_processor.affine_transform(frame)
+                    # 获取人脸关键点
+                    landmarks = self.image_processor.get_face_landmarks(frame) if face is not None else None
+                    results.append((frame_idx, face, box, affine_matrix, landmarks))  # 修改：添加 landmarks
+                    
+                    # 每处理一帧就清理一次 CUDA 缓存
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        
+                except Exception as e:
+                    print(f"处理第 {frame_idx} 帧时出错: {str(e)}")
+                    # 使用空结果作为占位符
+                    results.append((frame_idx, None, None, None, None))  # 修改：添加 None 作为 landmarks
+            
+            return results
+            
+        except Exception as e:
+            print(f"批处理失败: {str(e)}")
+            # 确保清理 CUDA 缓存
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            raise
 
     def restore_video(self, faces: torch.Tensor, video_frames: np.ndarray, boxes: list, affine_matrices: list):
         video_frames = video_frames[: len(faces)]
         out_frames = []
         print(f"Restoring {len(faces)} faces...")
+        
+        start_time = time.time()
+        
+        # 首先处理所有人脸
+        face_frames = []
         for index, face in enumerate(tqdm.tqdm(faces)):
             x1, y1, x2, y2 = boxes[index]
             height = int(y2 - y1)
@@ -304,64 +422,144 @@ class LipsyncPipeline(DiffusionPipeline):
             face = (face / 2 + 0.5).clamp(0, 1)
             face = (face * 255).to(torch.uint8).cpu().numpy()
             
-            # Check input face data type
+            # 检查输入人脸数据类型
             if face.dtype != np.uint8:
                 print(f"Warning: Input face dtype is {face.dtype}, converting to uint8")
                 face = np.clip(face, 0, 255).astype(np.uint8)
             
-            # Apply face enhancement before restoration
+            face_frames.append(face)
+        
+        preprocess_time = time.time() - start_time
+        print(f"预处理完成，耗时: {preprocess_time:.2f}秒")
+        
+        enhance_start_time = time.time()
+        # 使用批处理增强器处理所有人脸
+        if self.batch_face_enhancer is not None:
             try:
-                enhanced_face = self.face_enhancer.enhance(face)
-                # Check enhanced face data type
-                if enhanced_face is None:
-                    print(f"Warning: Face enhancement failed for frame {index}, using original face")
-                    enhanced_face = face
-                elif enhanced_face.dtype != np.uint8:
-                    print(f"Warning: Enhanced face dtype is {enhanced_face.dtype}, converting to uint8")
-                    enhanced_face = np.clip(enhanced_face, 0, 255).astype(np.uint8)
+                # 提交所有人脸进行处理
+                for i, face in enumerate(face_frames):
+                    self.batch_face_enhancer.process_frame(i, face, None)
                 
-                # Verify shape consistency
-                if enhanced_face.shape != face.shape:
-                    print(f"Warning: Enhanced face shape {enhanced_face.shape} != original shape {face.shape}, resizing")
-                    enhanced_face = cv2.resize(enhanced_face, (width, height), interpolation=cv2.INTER_LANCZOS4)
+                # 收集增强结果
+                enhanced_faces = []
+                frame_indices = []
+                
+                # 使用超时机制等待结果
+                timeout = 1.0  # 1秒超时
+                max_retries = 3  # 最大重试次数
+                
+                while len(enhanced_faces) < len(face_frames):
+                    try:
+                        idx, enhanced_face = self.batch_face_enhancer.get_result(timeout=timeout)
+                        # 验证增强后的人脸
+                        if enhanced_face is None:
+                            print(f"Warning: Face enhancement failed for frame {idx}, using original face")
+                            enhanced_face = face_frames[idx]
+                        elif enhanced_face.dtype != np.uint8:
+                            enhanced_face = np.clip(enhanced_face, 0, 255).astype(np.uint8)
+                        
+                        # 验证形状一致性
+                        x1, y1, x2, y2 = boxes[idx]
+                        height = int(y2 - y1)
+                        width = int(x2 - x1)
+                        if enhanced_face.shape != face_frames[idx].shape:
+                            print(f"Warning: Enhanced face shape {enhanced_face.shape} != original shape {face_frames[idx].shape}, resizing")
+                            enhanced_face = cv2.resize(enhanced_face, (width, height), interpolation=cv2.INTER_LANCZOS4)
+                        
+                        enhanced_faces.append((idx, enhanced_face))
+                        frame_indices.append(idx)
+                        
+                    except Exception as e:
+                        print(f"获取增强结果时出错: {str(e)}")
+                        if len(enhanced_faces) == len(face_frames):
+                            break
+                        if max_retries <= 0:
+                            print("达到最大重试次数，使用未增强的人脸")
+                            # 添加未处理的人脸
+                            for i in range(len(face_frames)):
+                                if i not in frame_indices:
+                                    enhanced_faces.append((i, face_frames[i]))
+                            break
+                        max_retries -= 1
+                        continue
+                
+                # 按帧索引排序结果
+                enhanced_faces.sort(key=lambda x: x[0])
+                face_frames = [face for _, face in enhanced_faces]
+                
             except Exception as e:
-                print(f"Warning: Face enhancement failed with error: {str(e)}, using original face")
-                enhanced_face = face
-            
-            out_frame = self.image_processor.restorer.restore_img(video_frames[index], enhanced_face, affine_matrices[index])
-            out_frames.append(out_frame)
+                print(f"批量增强人脸时出错: {str(e)}")
+                # 保持原始人脸不变
+                pass
+        
+        enhance_time = time.time() - enhance_start_time
+        print(f"人脸增强完成，耗时: {enhance_time:.2f}秒")
+        
+        restore_start_time = time.time()
+        # 将增强后的人脸还原到原始视频帧
+        for index, face in enumerate(face_frames):
+            try:
+                out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
+                out_frames.append(out_frame)
+            except Exception as e:
+                print(f"还原第 {index} 帧时出错: {str(e)}")
+                out_frames.append(video_frames[index])
+        
+        restore_time = time.time() - restore_start_time
+        total_time = time.time() - start_time
+        
+        print(f"\n人脸处理时间统计:")
+        print(f"预处理时间: {preprocess_time:.2f}秒")
+        print(f"人脸增强时间: {enhance_time:.2f}秒")
+        print(f"还原时间: {restore_time:.2f}秒")
+        print(f"总时间: {total_time:.2f}秒")
+        print(f"平均每帧处理时间: {total_time/len(faces):.3f}秒")
+        
+        if self.batch_face_enhancer is not None:
+            metrics = self.batch_face_enhancer.get_metrics()
+            if metrics:
+                print(f"\n批处理性能指标:")
+                print(f"处理的总帧数: {metrics['processed_frames']}")
+                print(f"平均处理时间: {metrics['avg_processing_time']:.3f}秒")
+                print(f"平均等待时间: {metrics['avg_queue_wait_time']:.3f}秒")
+                print(f"平均批大小: {metrics['avg_batch_size']:.1f}帧")
+        
         return np.stack(out_frames, axis=0)
 
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
         # If the audio is longer than the video, we need to loop the video
         if len(whisper_chunks) > len(video_frames):
-            faces, boxes, affine_matrices = self.affine_transform_video(video_frames)
+            faces, boxes, affine_matrices, face_landmarks = self.affine_transform_video(video_frames)  # 修改：添加 face_landmarks
             num_loops = math.ceil(len(whisper_chunks) / len(video_frames))
             loop_video_frames = []
             loop_faces = []
             loop_boxes = []
             loop_affine_matrices = []
+            loop_face_landmarks = []  # 新增：存储循环的关键点
             for i in range(num_loops):
                 if i % 2 == 0:
                     loop_video_frames.append(video_frames)
                     loop_faces.append(faces)
                     loop_boxes += boxes
                     loop_affine_matrices += affine_matrices
+                    loop_face_landmarks += face_landmarks  # 新增：添加关键点
                 else:
                     loop_video_frames.append(video_frames[::-1])
                     loop_faces.append(faces.flip(0))
                     loop_boxes += boxes[::-1]
                     loop_affine_matrices += affine_matrices[::-1]
+                    loop_face_landmarks += face_landmarks[::-1]  # 新增：添加反转的关键点
 
             video_frames = np.concatenate(loop_video_frames, axis=0)[: len(whisper_chunks)]
             faces = torch.cat(loop_faces, dim=0)[: len(whisper_chunks)]
             boxes = loop_boxes[: len(whisper_chunks)]
             affine_matrices = loop_affine_matrices[: len(whisper_chunks)]
+            face_landmarks = loop_face_landmarks[: len(whisper_chunks)]  # 新增：截取关键点
         else:
             video_frames = video_frames[: len(whisper_chunks)]
-            faces, boxes, affine_matrices = self.affine_transform_video(video_frames)
+            faces, boxes, affine_matrices, face_landmarks = self.affine_transform_video(video_frames)  # 修改：添加 face_landmarks
 
-        return video_frames, faces, boxes, affine_matrices
+        return video_frames, faces, boxes, affine_matrices, face_landmarks  # 修改：返回关键点
 
     def init_face_enhancer(self, model_path=None, **kwargs):
         """初始化批处理人脸增强器
@@ -506,7 +704,7 @@ class LipsyncPipeline(DiffusionPipeline):
         audio_samples = read_audio(audio_path)
         video_frames = read_video(video_path, use_decord=False)
 
-        video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames)
+        video_frames, faces, boxes, affine_matrices, face_landmarks = self.loop_video(whisper_chunks, video_frames)  # 修改：添加 face_landmarks
 
         synced_video_frames = []
         masked_video_frames = []
