@@ -2,6 +2,7 @@
 
 import numpy as np
 import cv2
+import os
 
 
 def transformation_from_points(points1, points0, smooth=True, p_bias=None):
@@ -42,6 +43,9 @@ class AlignRestore(object):
             self.face_template = self.face_template * ratio
             self.face_size = (int(75 * self.crop_ratio[0]), int(100 * self.crop_ratio[1]))
             self.p_bias = None
+            self.frame_idx = 0
+            self.fps = 25  # 默认25fps
+            os.makedirs("debug_frames", exist_ok=True)
 
     def process(self, img, lmk_align=None, smooth=True, align_points=3):
         aligned_face, affine_matrix = self.align_warp_face(img, lmk_align, smooth)
@@ -119,12 +123,30 @@ class AlignRestore(object):
         inv_soft_mask = np.clip(inv_soft_mask * 1.2, 0, 1)  # 增加对比度使边缘更锐利
         inv_soft_mask = inv_soft_mask[:, :, None]
         
+        # 保存每秒第一帧的处理过程
+        if self.frame_idx % self.fps == 0:
+            second = self.frame_idx // self.fps
+            # 保存原始帧
+            cv2.imwrite(f"debug_frames/{second:04d}_1_original.jpg", input_img)
+            # 保存增强前的人脸
+            cv2.imwrite(f"debug_frames/{second:04d}_2_face_before.jpg", face)
+            # 保存遮罩
+            cv2.imwrite(f"debug_frames/{second:04d}_3_mask.jpg", (inv_soft_mask * 255).astype(np.uint8))
+            # 保存增强后的人脸
+            cv2.imwrite(f"debug_frames/{second:04d}_4_face_after.jpg", inv_restored)
+            
+        self.frame_idx += 1
+        
         upsample_img = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
         if np.max(upsample_img) > 256:
             upsample_img = upsample_img.astype(np.uint16)
         else:
             upsample_img = upsample_img.astype(np.uint8)
         return upsample_img
+
+    def set_fps(self, fps):
+        """设置视频的fps，用于确定调试帧的保存间隔"""
+        self.fps = fps
 
 
 class laplacianSmooth:

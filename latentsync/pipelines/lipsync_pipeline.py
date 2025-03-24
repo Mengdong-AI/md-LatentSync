@@ -10,6 +10,7 @@ import subprocess
 import numpy as np
 import torch
 import torchvision
+from torchvision import transforms
 
 from packaging import version
 
@@ -37,6 +38,9 @@ import tqdm
 import soundfile as sf
 
 from ..utils.face_enhancer import FaceEnhancer
+
+import mediapipe as mp
+import face_alignment
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -379,6 +383,7 @@ class LipsyncPipeline(DiffusionPipeline):
         device = self._execution_device
         mask_image = load_fixed_mask(height, mask_image_path)
         self.image_processor = ImageProcessor(height, mask=mask, device="cuda", mask_image=mask_image)
+        self.image_processor.set_fps(video_fps)
         self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 
         # 1. Default height and width to unet
