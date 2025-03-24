@@ -38,6 +38,7 @@ import tqdm
 import soundfile as sf
 
 from ..utils.face_enhancer import FaceEnhancer
+from ..utils.batch_face_enhancer import BatchFaceEnhancer
 
 import mediapipe as mp
 import face_alignment
@@ -132,6 +133,18 @@ class LipsyncPipeline(DiffusionPipeline):
             enhancement_strength=0.5,
             enable=True
         )
+
+        # 初始化批处理人脸增强器
+        self.batch_face_enhancer = None
+        self.face_enhancer_config = {
+            'enhancement_method': 'gfpgan',
+            'device': 'cuda',
+            'enhancement_strength': 0.5,
+            'enable': True,
+            'batch_size': 4,
+            'num_workers': 2,
+            'queue_size': 8
+        }
 
     def enable_vae_slicing(self):
         self.vae.enable_slicing()
@@ -350,6 +363,83 @@ class LipsyncPipeline(DiffusionPipeline):
 
         return video_frames, faces, boxes, affine_matrices
 
+    def init_face_enhancer(self, model_path=None, **kwargs):
+        """初始化批处理人脸增强器
+        
+        Args:
+            model_path: 模型路径
+            **kwargs: 其他参数，包括 enhancement_method, enhancement_strength, 
+                     batch_size, num_workers, queue_size 等
+        """
+        # 更新配置
+        self.face_enhancer_config.update(kwargs)
+        
+        # 创建批处理增强器
+        self.batch_face_enhancer = BatchFaceEnhancer(
+            model_path=model_path,
+            batch_size=self.face_enhancer_config['batch_size'],
+            num_workers=self.face_enhancer_config['num_workers'],
+            queue_size=self.face_enhancer_config['queue_size'],
+            device=self.face_enhancer_config['device'],
+            enhancement_method=self.face_enhancer_config['enhancement_method'],
+            enhancement_strength=self.face_enhancer_config['enhancement_strength']
+        )
+
+    def enhance_video_frames(self, video_frames: np.ndarray, face_landmarks: list = None) -> np.ndarray:
+        """批量增强视频帧
+        
+        Args:
+            video_frames: 视频帧数组，形状为 [num_frames, height, width, channels]
+            face_landmarks: 每帧的人脸关键点列表
+            
+        Returns:
+            增强后的视频帧数组
+        """
+        if not self.face_enhancer_config['enable'] or self.batch_face_enhancer is None:
+            return video_frames
+            
+        try:
+            # 提交所有帧进行处理
+            for i in range(len(video_frames)):
+                landmarks = face_landmarks[i] if face_landmarks is not None else None
+                self.batch_face_enhancer.process_frame(i, video_frames[i], landmarks)
+            
+            # 收集处理结果
+            enhanced_frames = []
+            frame_indices = []
+            
+            # 使用超时机制等待结果
+            timeout = 1.0  # 1秒超时
+            max_retries = 3  # 最大重试次数
+            
+            while len(enhanced_frames) < len(video_frames):
+                try:
+                    idx, frame = self.batch_face_enhancer.get_result(timeout=timeout)
+                    enhanced_frames.append((idx, frame))
+                except Exception as e:
+                    print(f"获取增强结果时出错: {str(e)}")
+                    if len(enhanced_frames) == len(video_frames):
+                        break
+                    if max_retries <= 0:
+                        print("达到最大重试次数，返回原始帧")
+                        # 返回未处理的原始帧
+                        for i in range(len(video_frames)):
+                            if i not in frame_indices:
+                                enhanced_frames.append((i, video_frames[i]))
+                        break
+                    max_retries -= 1
+                    continue
+                
+                frame_indices.append(idx)
+            
+            # 按帧索引排序结果
+            enhanced_frames.sort(key=lambda x: x[0])
+            return np.array([frame for _, frame in enhanced_frames])
+            
+        except Exception as e:
+            print(f"批量增强视频帧时出错: {str(e)}")
+            return video_frames
+
     @torch.no_grad()
     def __call__(
         self,
@@ -371,6 +461,11 @@ class LipsyncPipeline(DiffusionPipeline):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
+        face_enhance: bool = False,
+        face_enhance_method: str = 'gfpgan',
+        face_enhance_strength: float = 0.5,
+        mouth_protection: bool = True,
+        mouth_protection_strength: float = 0.8,
         **kwargs,
     ):
         is_train = self.denoising_unet.training
@@ -507,6 +602,19 @@ class LipsyncPipeline(DiffusionPipeline):
             )
             synced_video_frames.append(decoded_latents)
             # masked_video_frames.append(masked_pixel_values)
+
+        # 如果启用了人脸增强，初始化批处理增强器
+        if face_enhance:
+            self.init_face_enhancer(
+                enhancement_method=face_enhance_method,
+                enhancement_strength=face_enhance_strength,
+                mouth_protection=mouth_protection,
+                mouth_protection_strength=mouth_protection_strength
+            )
+        
+        # 在处理视频帧时使用批处理增强
+        if face_enhance and self.batch_face_enhancer is not None:
+            video_frames = self.enhance_video_frames(video_frames, face_landmarks)
 
         synced_video_frames = self.restore_video(torch.cat(synced_video_frames), video_frames, boxes, affine_matrices)
         # masked_video_frames = self.restore_video(
