@@ -440,63 +440,55 @@ class LipsyncPipeline(DiffusionPipeline):
         print(f"预处理完成，耗时: {preprocess_time:.2f}秒")
         
         enhance_start_time = time.time()
-        # 使用批处理增强器处理所有人脸
+        # 使用合适的方式处理人脸增强
         if self.batch_face_enhancer is not None:
             try:
-                # 提交所有人脸进行处理
-                for i, face in enumerate(face_frames):
-                    landmarks = face_landmarks[i] if face_landmarks is not None else None
-                    self.batch_face_enhancer.process_frame(i, face, landmarks)
-                
-                # 收集增强结果
-                enhanced_faces = []
-                frame_indices = []
-                
-                # 使用超时机制等待结果
-                timeout = 10.0  # 10秒超时
-                max_retries = 3  # 最大重试次数
-                
-                while len(enhanced_faces) < len(face_frames):
-                    try:
-                        idx, enhanced_face = self.batch_face_enhancer.get_result(timeout=timeout)
-                        # 验证增强后的人脸
-                        if enhanced_face is None:
-                            print(f"Warning: Face enhancement failed for frame {idx}, using original face")
-                            enhanced_face = face_frames[idx]
-                        elif enhanced_face.dtype != np.uint8:
-                            enhanced_face = np.clip(enhanced_face, 0, 255).astype(np.uint8)
-                        
-                        # 验证形状一致性
-                        x1, y1, x2, y2 = boxes[idx]
-                        height = int(y2 - y1)
-                        width = int(x2 - x1)
-                        if enhanced_face.shape != face_frames[idx].shape:
-                            print(f"Warning: Enhanced face shape {enhanced_face.shape} != original shape {face_frames[idx].shape}, resizing")
-                            enhanced_face = cv2.resize(enhanced_face, (width, height), interpolation=cv2.INTER_LANCZOS4)
-                        
-                        enhanced_faces.append((idx, enhanced_face))
-                        frame_indices.append(idx)
-                        
-                    except Exception as e:
-                        print(f"获取增强结果时出错: {str(e)}")
-                        if len(enhanced_faces) == len(face_frames):
-                            break
-                        if max_retries <= 0:
-                            print("达到最大重试次数，使用未增强的人脸")
-                            # 添加未处理的人脸
-                            for i in range(len(face_frames)):
-                                if i not in frame_indices:
-                                    enhanced_faces.append((i, face_frames[i]))
-                            break
-                        max_retries -= 1
-                        continue
-                
-                # 按帧索引排序结果
-                enhanced_faces.sort(key=lambda x: x[0])
-                face_frames = [face for _, face in enhanced_faces]
+                # 如果帧数较多且worker数足够，使用批处理
+                if len(face_frames) > 50 and self.face_enhancer_config.get('num_workers', 2) >= 4:
+                    print("使用批处理进行人脸增强...")
+                    # 提交所有人脸进行处理
+                    for i, face in enumerate(face_frames):
+                        landmarks = face_landmarks[i] if face_landmarks is not None else None
+                        self.batch_face_enhancer.process_frame(i, face, landmarks)
+                    
+                    # 收集增强结果
+                    enhanced_faces = []
+                    frame_indices = []
+                    
+                    while len(enhanced_faces) < len(face_frames):
+                        try:
+                            idx, enhanced_face = self.batch_face_enhancer.get_result(timeout=10.0)
+                            if idx is not None and enhanced_face is not None:
+                                enhanced_faces.append((idx, enhanced_face))
+                                frame_indices.append(idx)
+                                if len(enhanced_faces) % 10 == 0:
+                                    print(f"已处理 {len(enhanced_faces)}/{len(face_frames)} 帧")
+                        except Exception as e:
+                            print(f"获取增强结果时出错: {str(e)}")
+                            continue
+                    
+                    # 按帧索引排序结果
+                    enhanced_faces.sort(key=lambda x: x[0])
+                    face_frames = [face for _, face in enhanced_faces]
+                else:
+                    print("使用单线程进行人脸增强...")
+                    # 直接使用 FaceEnhancer 处理
+                    enhanced_faces = []
+                    for i, face in enumerate(tqdm.tqdm(face_frames)):
+                        try:
+                            landmarks = face_landmarks[i] if face_landmarks is not None else None
+                            enhanced_face = self.batch_face_enhancer.enhancers[0].enhance(face, landmarks)
+                            if enhanced_face is None:
+                                print(f"Warning: Face enhancement failed for frame {i}, using original face")
+                                enhanced_face = face
+                            enhanced_faces.append(enhanced_face)
+                        except Exception as e:
+                            print(f"处理第 {i} 帧时出错: {str(e)}")
+                            enhanced_faces.append(face)
+                    face_frames = enhanced_faces
                 
             except Exception as e:
-                print(f"批量增强人脸时出错: {str(e)}")
+                print(f"人脸增强时出错: {str(e)}")
                 # 保持原始人脸不变
                 pass
         
@@ -522,7 +514,6 @@ class LipsyncPipeline(DiffusionPipeline):
         print(f"还原时间: {restore_time:.2f}秒")
         print(f"总时间: {total_time:.2f}秒")
         print(f"平均每帧处理时间: {total_time/len(faces):.3f}秒")
-        
         
         return np.stack(out_frames, axis=0)
 
